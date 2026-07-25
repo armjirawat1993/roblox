@@ -44,6 +44,20 @@ local Config = {
 
 	-- GUI
 	ToggleKey = Enum.KeyCode.RightShift,
+	
+	-- Damage / Auto Attack
+	AutoAttackEnabled = false,
+
+	AttackRadius = 12,
+	MinAttackRadius = 3,
+	MaxAttackRadius = 50,
+
+	AttackInterval = 0.35,
+	MinAttackInterval = 0.05,
+	MaxAttackInterval = 1,
+
+	MaxAttackTargets = 20,
+	OnlyNPC = true,
 }
 
 
@@ -64,7 +78,10 @@ local flyVelocity = nil
 local flyGyro = nil
 
 local savedPositions = {}
-local nextPositionId = 0
+local nextPositionId = 
+
+local autoAttackConnection = nil
+local lastAutoAttackTime = 0
 
 --==================================================
 -- [4] CONNECTION MANAGER
@@ -513,6 +530,161 @@ local function teleportToCFrame(targetCFrame)
 end
 
 --==================================================
+-- [10.2] AUTO ATTACK / DAMAGE AREA
+--==================================================
+
+local function getEquippedTool()
+	local character = getCharacter()
+
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChildOfClass("Tool")
+end
+
+local function isValidAttackTarget(model, humanoid)
+	local character = getCharacter()
+
+	if not model or not humanoid then
+		return false
+	end
+
+	if model == character then
+		return false
+	end
+
+	if humanoid.Health <= 0 then
+		return false
+	end
+
+	if Config.OnlyNPC then
+		local targetPlayer = Players:GetPlayerFromCharacter(model)
+
+		if targetPlayer then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function getNearbyAttackTargets()
+	local character = getCharacter()
+	local rootPart = getRootPart()
+
+	if not character or not rootPart then
+		return {}
+	end
+
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = {
+		character,
+	}
+	overlapParams.MaxParts = 250
+
+	local nearbyParts = Workspace:GetPartBoundsInRadius(
+		rootPart.Position,
+		Config.AttackRadius,
+		overlapParams
+	)
+
+	local targets = {}
+	local foundHumanoids = {}
+
+	for _, part in ipairs(nearbyParts) do
+		local model = part:FindFirstAncestorOfClass("Model")
+
+		local humanoid = model
+			and model:FindFirstChildOfClass("Humanoid")
+
+		if isValidAttackTarget(model, humanoid)
+			and not foundHumanoids[humanoid] then
+
+			foundHumanoids[humanoid] = true
+
+			table.insert(targets, {
+				Model = model,
+				Humanoid = humanoid,
+			})
+
+			if #targets >= Config.MaxAttackTargets then
+				break
+			end
+		end
+	end
+
+	return targets
+end
+
+local function performAutoAttack()
+	if scriptClosed or not Config.AutoAttackEnabled then
+		return
+	end
+
+	local tool = getEquippedTool()
+
+	-- ทำงานเฉพาะตอนถืออาวุธหรือ Tool
+	if not tool then
+		return
+	end
+
+	local targets = getNearbyAttackTargets()
+
+	if #targets == 0 then
+		return
+	end
+
+	tool:Activate()
+end
+
+local function stopAutoAttack()
+	Config.AutoAttackEnabled = false
+
+	if autoAttackConnection then
+		autoAttackConnection:Disconnect()
+		autoAttackConnection = nil
+	end
+end
+
+local function startAutoAttack()
+	if autoAttackConnection then
+		autoAttackConnection:Disconnect()
+		autoAttackConnection = nil
+	end
+
+	Config.AutoAttackEnabled = true
+	lastAutoAttackTime = 0
+
+	autoAttackConnection = RunService.Heartbeat:Connect(function()
+		if scriptClosed or not Config.AutoAttackEnabled then
+			return
+		end
+
+		local currentTime = os.clock()
+
+		if currentTime - lastAutoAttackTime
+			< Config.AttackInterval then
+
+			return
+		end
+
+		lastAutoAttackTime = currentTime
+
+		performAutoAttack()
+	end)
+end
+
+local function setAutoAttackEnabled(enabled)
+	if enabled then
+		startAutoAttack()
+	else
+		stopAutoAttack()
+	end
+end
+
+--==================================================
 -- [11] REMOVE OLD GUI
 --==================================================
 
@@ -727,6 +899,9 @@ local worldPage, worldTab, worldContent =
 
 local positionPage, positionTab, positionContent =
 	createTab("Position", 3)
+
+local damagePage, damageTab, damageContent =
+	createTab("Damage", 4)
 
 local function showTab(tabName)
 	for name, page in pairs(pages) do
@@ -1717,6 +1892,261 @@ addConnection(positionNameInput.FocusLost:Connect(function(enterPressed)
 		addPositionButton:Activate()
 	end
 end))
+
+--==================================================
+-- [24.4] DAMAGE TAB GUI
+--==================================================
+
+local damageTitle = Instance.new("TextLabel")
+damageTitle.Size = UDim2.new(1, 0, 0, 35)
+damageTitle.BackgroundTransparency = 1
+damageTitle.Text = "Damage / Auto Attack"
+damageTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+damageTitle.TextSize = 20
+damageTitle.Font = Enum.Font.GothamBold
+damageTitle.TextXAlignment = Enum.TextXAlignment.Left
+damageTitle.LayoutOrder = 1
+damageTitle.Parent = damageContent
+
+local autoAttackButton = createPageButton(
+	damageContent,
+	"Auto Attack: OFF",
+	2
+)
+
+local attackRadiusGroup,
+	attackRadiusLabel,
+	attackRadiusSlider,
+	attackRadiusFill,
+	attackRadiusKnob = createSliderGroup(
+		damageContent,
+		"Attack Radius: " .. Config.AttackRadius,
+		3
+	)
+
+local attackSpeedGroup,
+	attackSpeedLabel,
+	attackSpeedSlider,
+	attackSpeedFill,
+	attackSpeedKnob = createSliderGroup(
+		damageContent,
+		"Attack Interval: " .. Config.AttackInterval,
+		4
+	)
+
+local onlyNPCButton = createPageButton(
+	damageContent,
+	"Only NPC: ON",
+	5
+)
+
+local damageInfoLabel = Instance.new("TextLabel")
+damageInfoLabel.Size = UDim2.new(1, 0, 0, 90)
+damageInfoLabel.BackgroundTransparency = 1
+damageInfoLabel.Text =
+	"Auto Attack จะทำงานเฉพาะตอนถือ Tool\n"
+	.. "Radius = ระยะตรวจหาเป้าหมาย\n"
+	.. "Interval ต่ำ = โจมตีเร็วขึ้น"
+damageInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
+damageInfoLabel.TextSize = 13
+damageInfoLabel.Font = Enum.Font.Gotham
+damageInfoLabel.TextWrapped = true
+damageInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+damageInfoLabel.LayoutOrder = 6
+damageInfoLabel.Parent = damageContent
+
+local function updateDamageInterface()
+	if scriptClosed then
+		return
+	end
+
+	setButtonState(
+		autoAttackButton,
+		"Auto Attack",
+		Config.AutoAttackEnabled
+	)
+
+	setButtonState(
+		onlyNPCButton,
+		"Only NPC",
+		Config.OnlyNPC
+	)
+
+	attackRadiusLabel.Text =
+		"Attack Radius: "
+		.. tostring(Config.AttackRadius)
+
+	attackSpeedLabel.Text =
+		"Attack Interval: "
+		.. string.format("%.2f", Config.AttackInterval)
+end
+
+
+local function updateAttackRadiusSlider()
+	updateSliderVisual(
+		Config.AttackRadius,
+		Config.MinAttackRadius,
+		Config.MaxAttackRadius,
+		attackRadiusFill,
+		attackRadiusKnob
+	)
+end
+
+local function updateAttackSpeedSlider()
+	updateSliderVisual(
+		Config.AttackInterval,
+		Config.MinAttackInterval,
+		Config.MaxAttackInterval,
+		attackSpeedFill,
+		attackSpeedKnob
+	)
+end
+
+local function setAttackRadiusFromPosition(position)
+	local width = attackRadiusSlider.AbsoluteSize.X
+
+	if width <= 0 then
+		return
+	end
+
+	local percent = math.clamp(
+		(
+			position.X
+			- attackRadiusSlider.AbsolutePosition.X
+		) / width,
+		0,
+		1
+	)
+
+	local value =
+		Config.MinAttackRadius
+		+ (
+			Config.MaxAttackRadius
+			- Config.MinAttackRadius
+		) * percent
+
+	Config.AttackRadius =
+		math.floor(value + 0.5)
+
+	updateAttackRadiusSlider()
+	updateDamageInterface()
+end
+
+local function setAttackSpeedFromPosition(position)
+	local width = attackSpeedSlider.AbsoluteSize.X
+
+	if width <= 0 then
+		return
+	end
+
+	local percent = math.clamp(
+		(
+			position.X
+			- attackSpeedSlider.AbsolutePosition.X
+		) / width,
+		0,
+		1
+	)
+
+	local value =
+		Config.MinAttackInterval
+		+ (
+			Config.MaxAttackInterval
+			- Config.MinAttackInterval
+		) * percent
+
+	-- เก็บทศนิยม 2 ตำแหน่ง
+	Config.AttackInterval =
+		math.floor(value * 100 + 0.5) / 100
+
+	updateAttackSpeedSlider()
+	updateDamageInterface()
+end
+
+local draggingAttackRadiusSlider = false
+local draggingAttackSpeedSlider = false
+
+local function beginAttackRadiusSlider(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		draggingAttackRadiusSlider = true
+		setAttackRadiusFromPosition(input.Position)
+	end
+end
+
+local function beginAttackSpeedSlider(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		draggingAttackSpeedSlider = true
+		setAttackSpeedFromPosition(input.Position)
+	end
+end
+
+addConnection(
+	attackRadiusSlider.InputBegan:Connect(
+		beginAttackRadiusSlider
+	)
+)
+
+addConnection(
+	attackRadiusKnob.InputBegan:Connect(
+		beginAttackRadiusSlider
+	)
+)
+
+addConnection(
+	attackSpeedSlider.InputBegan:Connect(
+		beginAttackSpeedSlider
+	)
+)
+
+addConnection(
+	attackSpeedKnob.InputBegan:Connect(
+		beginAttackSpeedSlider
+	)
+)
+
+addConnection(UserInputService.InputChanged:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement
+		and input.UserInputType ~= Enum.UserInputType.Touch then
+
+		return
+	end
+
+	if draggingAttackRadiusSlider then
+		setAttackRadiusFromPosition(input.Position)
+	end
+
+	if draggingAttackSpeedSlider then
+		setAttackSpeedFromPosition(input.Position)
+	end
+end))
+
+addConnection(UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		draggingAttackRadiusSlider = false
+		draggingAttackSpeedSlider = false
+	end
+end))
+
+addConnection(autoAttackButton.MouseButton1Click:Connect(function()
+	setAutoAttackEnabled(
+		not Config.AutoAttackEnabled
+	)
+
+	updateDamageInterface()
+end))
+
+addConnection(onlyNPCButton.MouseButton1Click:Connect(function()
+	Config.OnlyNPC = not Config.OnlyNPC
+
+	updateDamageInterface()
+end))
+
 --==================================================
 -- [25] TAB EVENTS
 --==================================================
@@ -1734,7 +2164,13 @@ addConnection(positionTab.MouseButton1Click:Connect(function()
 	refreshPositionList()
 end))
 
+addConnection(damageTab.MouseButton1Click:Connect(function()
+	showTab("Damage")
 
+	updateAttackRadiusSlider()
+	updateAttackSpeedSlider()
+	updateDamageInterface()
+end))
 
 
 --==================================================
@@ -1906,9 +2342,11 @@ local function closeScript()
 	Config.InfiniteJump = false
 	Config.FlyEnabled = false
 	Config.InstantPrompt = false
-
+	Config.AutoAttackEnabled = false
+	
 	stopFly()
 	disconnectWalkSpeedLock()
+	stopAutoAttack()
 
 	local humanoid = getHumanoid()
 
@@ -2029,5 +2467,9 @@ task.defer(function()
 	updateCharacterInterface()
 
 	refreshPlayerList()
-    refreshPositionList()
+	refreshPositionList()
+	
+	updateAttackRadiusSlider()
+	updateAttackSpeedSlider()
+	updateDamageInterface()
 end)
