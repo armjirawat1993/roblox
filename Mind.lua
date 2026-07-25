@@ -29,8 +29,21 @@ local PromptConfig = {
 local BoulderESPConfig = {
 	Enabled = false,
 	Connection = nil,
+	DescendantConnection = nil,
 	Highlights = {},
 	Folder = nil,
+
+	Colors = {
+		Color3.fromRGB(0, 200, 255),   -- 1 ฟ้า
+		Color3.fromRGB(0, 255, 100),   -- 2 เขียว
+		Color3.fromRGB(255, 230, 0),   -- 3 เหลือง
+		Color3.fromRGB(180, 0, 255),   -- 4 ม่วง
+		Color3.fromRGB(0, 80, 255),    -- 5 น้ำเงิน
+		Color3.fromRGB(255, 70, 180),  -- 6 ชมพู
+	},
+
+	NameColorMap = {},
+	NextColorIndex = 1,
 }
 
 local AutoClickConfig = {
@@ -122,8 +135,10 @@ local function togglePrompt(enabled)
 end
 
 --==================================================
--- ระบบ ESP หิน
+-- ระบบ ESP หิน แยกสีตามชื่อ Object
 --==================================================
+
+local ESP_NAME = "BoulderESP"
 
 local function getBouldersFolder()
 	if BoulderESPConfig.Folder
@@ -144,7 +159,9 @@ local function getBouldersFolder()
 		mountainDecorations:FindFirstChild("Boulders")
 
 	if not boulders then
-		warn("ไม่พบ Workspace.MountainDecorations.Boulders")
+		warn(
+			"ไม่พบ Workspace.MountainDecorations.Boulders"
+		)
 		return nil
 	end
 
@@ -153,64 +170,167 @@ local function getBouldersFolder()
 	return boulders
 end
 
-local function addBoulderESP(object)
-	if not BoulderESPConfig.Enabled then
+local function getColorByName(objectName)
+	local savedColor =
+		BoulderESPConfig.NameColorMap[objectName]
+
+	if savedColor then
+		return savedColor
+	end
+
+	local color =
+		BoulderESPConfig.Colors[
+			BoulderESPConfig.NextColorIndex
+		]
+
+	BoulderESPConfig.NameColorMap[objectName] =
+		color
+
+	BoulderESPConfig.NextColorIndex += 1
+
+	if BoulderESPConfig.NextColorIndex
+		> #BoulderESPConfig.Colors then
+
+		BoulderESPConfig.NextColorIndex = 1
+	end
+
+	return color
+end
+
+local function getTopLevelBoulder(object)
+	local boulders = getBouldersFolder()
+
+	if not boulders or not object then
+		return nil
+	end
+
+	local current = object
+
+	while current and current.Parent ~= boulders do
+		current = current.Parent
+	end
+
+	if current and current.Parent == boulders then
+		return current
+	end
+
+	return nil
+end
+
+local function removeHighlightsFromObject(container)
+	if not container then
 		return
 	end
 
-	if not object:IsA("Model")
-		and not object:IsA("BasePart") then
+	if container:IsA("Highlight")
+		and container.Name == ESP_NAME then
 
+		container:Destroy()
 		return
 	end
 
-	local oldHighlight = object:FindFirstChild("BlueESP")
+	for _, object in ipairs(container:GetDescendants()) do
+		if object:IsA("Highlight")
+			and object.Name == ESP_NAME then
 
-	if oldHighlight then
-		BoulderESPConfig.Highlights[object] = oldHighlight
+			object:Destroy()
+		end
+	end
+end
+
+local function addHighlightToPart(part, color)
+	if not part:IsA("BasePart") then
 		return
 	end
 
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "BlueESP"
-	highlight.Adornee = object
+	-- บังคับให้มองเห็น
+	part.Transparency = 0
 
-	highlight.FillColor = Color3.fromRGB(0, 120, 255)
+	local highlight = part:FindFirstChild(ESP_NAME)
+
+	if not highlight then
+		highlight = Instance.new("Highlight")
+		highlight.Name = ESP_NAME
+		highlight.Adornee = part
+		highlight.Parent = part
+	end
+
+	highlight.FillColor = color
 	highlight.FillTransparency = 0.45
 
-	highlight.OutlineColor = Color3.fromRGB(0, 200, 255)
+	highlight.OutlineColor = color
 	highlight.OutlineTransparency = 0
 
 	highlight.DepthMode =
 		Enum.HighlightDepthMode.AlwaysOnTop
 
 	highlight.Enabled = true
-	highlight.Parent = object
 
-	BoulderESPConfig.Highlights[object] = highlight
+	BoulderESPConfig.Highlights[highlight] = true
+end
+
+local function addBoulderESP(container)
+	if not BoulderESPConfig.Enabled then
+		return
+	end
+
+	if not container or not container.Parent then
+		return
+	end
+
+	local color = getColorByName(container.Name)
+
+	-- กรณี Object ชั้นแรกเป็น Part
+	if container:IsA("BasePart") then
+		addHighlightToPart(container, color)
+	end
+
+	-- ทำทุก cell ภายใน เช่น:
+	-- Gildrite_cell
+	-- Gildrite_cell.001
+	-- Mossite_cell
+	for _, object in ipairs(container:GetDescendants()) do
+		if object:IsA("BasePart") then
+			addHighlightToPart(object, color)
+		end
+	end
+end
+
+local function scanBoulders()
+	local boulders = getBouldersFolder()
+
+	if not boulders then
+		return
+	end
+
+	local containers = boulders:GetChildren()
+
+	-- เรียงชื่อ เพื่อให้การแจกสีคงที่
+	table.sort(containers, function(a, b)
+		return string.lower(a.Name)
+			< string.lower(b.Name)
+	end)
+
+	for _, container in ipairs(containers) do
+		addBoulderESP(container)
+	end
 end
 
 local function removeBoulderESP()
-	for object, highlight in pairs(
+	for highlight in pairs(
 		BoulderESPConfig.Highlights
 	) do
 		if highlight and highlight.Parent then
 			highlight:Destroy()
 		end
-
-		BoulderESPConfig.Highlights[object] = nil
 	end
+
+	table.clear(BoulderESPConfig.Highlights)
 
 	local boulders = getBouldersFolder()
 
 	if boulders then
-		for _, object in ipairs(boulders:GetChildren()) do
-			local highlight = object:FindFirstChild("BlueESP")
-
-			if highlight then
-				highlight:Destroy()
-			end
-		end
+		removeHighlightsFromObject(boulders)
 	end
 end
 
@@ -227,18 +347,48 @@ local function enableBoulderESP()
 
 	BoulderESPConfig.Enabled = true
 
-	for _, object in ipairs(boulders:GetChildren()) do
-		addBoulderESP(object)
-	end
+	table.clear(BoulderESPConfig.NameColorMap)
+	BoulderESPConfig.NextColorIndex = 1
 
+	scanBoulders()
+
+	-- Object ชั้นแรกเพิ่มใหม่
 	if not BoulderESPConfig.Connection then
 		BoulderESPConfig.Connection =
-			boulders.ChildAdded:Connect(function(object)
+			boulders.ChildAdded:Connect(function(container)
 				task.wait()
 
 				if BoulderESPConfig.Enabled then
-					addBoulderESP(object)
+					addBoulderESP(container)
 				end
+			end)
+	end
+
+	-- cell หรือ Part ด้านในเพิ่มใหม่
+	if not BoulderESPConfig.DescendantConnection then
+		BoulderESPConfig.DescendantConnection =
+			boulders.DescendantAdded:Connect(function(object)
+				if not BoulderESPConfig.Enabled then
+					return
+				end
+
+				if not object:IsA("BasePart") then
+					return
+				end
+
+				task.wait()
+
+				local container =
+					getTopLevelBoulder(object)
+
+				if not container then
+					return
+				end
+
+				local color =
+					getColorByName(container.Name)
+
+				addHighlightToPart(object, color)
 			end)
 	end
 end
@@ -251,7 +401,15 @@ local function disableBoulderESP()
 		BoulderESPConfig.Connection = nil
 	end
 
+	if BoulderESPConfig.DescendantConnection then
+		BoulderESPConfig.DescendantConnection:Disconnect()
+		BoulderESPConfig.DescendantConnection = nil
+	end
+
 	removeBoulderESP()
+
+	table.clear(BoulderESPConfig.NameColorMap)
+	BoulderESPConfig.NextColorIndex = 1
 end
 
 local function toggleBoulderESP(enabled)
@@ -542,7 +700,7 @@ boulderESPDescription.Position = UDim2.fromOffset(14, 40)
 boulderESPDescription.BackgroundTransparency = 1
 boulderESPDescription.Font = Enum.Font.Gotham
 boulderESPDescription.Text =
-	"Highlight สีฟ้า\nมองเห็นทะลุสิ่งกีดขวาง"
+	"แยกสีตามชื่อหิน\nมองเห็นทะลุสิ่งกีดขวาง"
 boulderESPDescription.TextColor3 =
 	Color3.fromRGB(145, 150, 163)
 boulderESPDescription.TextSize = 11
