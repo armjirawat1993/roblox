@@ -41,7 +41,9 @@ local Config = {
 
 	-- Prompt
 	InstantPrompt = false,
-
+	
+	-- Noclip
+	NoclipEnabled = false,
 	-- GUI
 	ToggleKey = Enum.KeyCode.RightShift,
 	
@@ -68,6 +70,7 @@ local Config = {
 	MaxAutoClickInterval = 1.00,
 
 	AutoClickKey = Enum.KeyCode.G,
+	
 }
 
 
@@ -96,6 +99,11 @@ local radiusLockConnection = nil
 
 local autoClickConnection = nil
 local lastAutoClickTime = 0
+
+local Noclip = {
+	Connection = nil,
+	OriginalStates = {},
+}
 --==================================================
 -- [4] CONNECTION MANAGER
 --==================================================
@@ -144,6 +152,72 @@ local function getRootPart()
 	return character:FindFirstChild("HumanoidRootPart")
 end
 
+--==================================================
+-- [5.1] NOCLIP
+--==================================================
+
+function Noclip:Apply()
+	local character = getCharacter()
+
+	if not character then
+		return
+	end
+
+	for _, object in ipairs(character:GetDescendants()) do
+		if object:IsA("BasePart") then
+			if self.OriginalStates[object] == nil then
+				self.OriginalStates[object] =
+					object.CanCollide
+			end
+
+			object.CanCollide = false
+		end
+	end
+end
+
+function Noclip:Stop()
+	if self.Connection then
+		self.Connection:Disconnect()
+		self.Connection = nil
+	end
+
+	for part, originalCanCollide in pairs(self.OriginalStates) do
+		if part and part.Parent then
+			part.CanCollide = originalCanCollide
+		end
+	end
+
+	table.clear(self.OriginalStates)
+end
+
+function Noclip:Start()
+	if scriptClosed then
+		return
+	end
+
+	self:Stop()
+
+	Config.NoclipEnabled = true
+	self:Apply()
+
+	self.Connection = RunService.Stepped:Connect(function()
+		if scriptClosed or not Config.NoclipEnabled then
+			return
+		end
+
+		self:Apply()
+	end)
+end
+
+function Noclip:SetEnabled(enabled)
+	Config.NoclipEnabled = enabled
+
+	if enabled then
+		self:Start()
+	else
+		self:Stop()
+	end
+end
 
 --==================================================
 -- [6] WALK SPEED
@@ -370,9 +444,16 @@ local function setFlyEnabled(enabled)
 	Config.FlyEnabled = enabled
 
 	if enabled then
+		-- เปิด Noclip พร้อม Fly
+		Noclip:SetEnabled(true)
+
 		startFly()
 	else
+		-- ปิด Fly ก่อน
 		stopFly()
+
+		-- ปิด Noclip พร้อม Fly
+		Noclip:SetEnabled(false)
 	end
 end
 
@@ -716,10 +797,8 @@ local function startRadiusLock()
 		end
 
 		if Config.AttackRadius ~= Config.LockedAttackRadius then
-			Config.AttackRadius = Config.LockedAttackRadius
-
-			updateAttackRadiusSlider()
-			updateDamageInterface()
+			Config.AttackRadius =
+				Config.LockedAttackRadius
 		end
 	end)
 end
@@ -1182,10 +1261,21 @@ local infiniteJumpButton = createPageButton(
 	5
 )
 
+local instantPromptButton = createPageButton(
+	characterContent,
+	"Instant Prompt: OFF",
+	6
+)
+
+Noclip.Button = createPageButton(
+	characterContent,
+	"Noclip: OFF",
+	7
+)
 local flyButton = createPageButton(
 	characterContent,
 	"Fly: OFF",
-	6
+	8
 )
 
 local flySpeedGroup,
@@ -1195,14 +1285,8 @@ local flySpeedGroup,
 	flyKnob = createSliderGroup(
 		characterContent,
 		"Fly Speed: " .. Config.FlySpeed,
-		7
+		9
 	)
-
-local instantPromptButton = createPageButton(
-	characterContent,
-	"Instant Prompt: OFF",
-	8
-)
 
 local flyInfoLabel = Instance.new("TextLabel")
 flyInfoLabel.Size = UDim2.new(1, 0, 0, 65)
@@ -1214,7 +1298,7 @@ flyInfoLabel.TextSize = 13
 flyInfoLabel.Font = Enum.Font.Gotham
 flyInfoLabel.TextWrapped = true
 flyInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-flyInfoLabel.LayoutOrder = 9
+flyInfoLabel.LayoutOrder = 10
 flyInfoLabel.Parent = characterContent
 
 
@@ -1244,11 +1328,10 @@ local function updateCharacterInterface()
 		"Infinite Jump",
 		Config.InfiniteJump
 	)
-
 	setButtonState(
-		flyButton,
-		"Fly",
-		Config.FlyEnabled
+		Noclip.Button,
+		"Noclip",
+		Config.NoclipEnabled
 	)
 
 	setButtonState(
@@ -1256,6 +1339,12 @@ local function updateCharacterInterface()
 		"Instant Prompt",
 		Config.InstantPrompt
 	)
+	setButtonState(
+		flyButton,
+		"Fly",
+		Config.FlyEnabled
+	)
+
 
 	walkSpeedLabel.Text =
 		"Walk Speed: " .. tostring(Config.WalkSpeed)
@@ -1457,6 +1546,10 @@ addConnection(instantPromptButton.MouseButton1Click:Connect(function()
 	updateCharacterInterface()
 end))
 
+addConnection(Noclip.Button.MouseButton1Click:Connect(function()
+	Noclip:SetEnabled(not Config.NoclipEnabled)
+	updateCharacterInterface()
+end))
 
 --==================================================
 -- [22] WORLD TAB GUI
@@ -2502,7 +2595,8 @@ end))
 local logoButton = Instance.new("ImageButton")
 logoButton.Name = "LogoButton"
 logoButton.Size = UDim2.fromOffset(62, 62)
-logoButton.Position = UDim2.new(0, 20, 0.5, -31)
+logoButton.AnchorPoint = Vector2.new(0.5, 0)
+logoButton.Position = UDim2.new(0.5, 0, 0, 100)
 logoButton.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
 logoButton.BorderSizePixel = 0
 logoButton.Image = LOGO_ASSET_ID
@@ -2533,6 +2627,11 @@ local function minimizeMenu()
 	end
 
 	mainFrame.Visible = false
+
+	-- จัดโลโก้ไว้กึ่งกลางด้านบนทุกครั้งที่ย่อ
+	logoButton.AnchorPoint = Vector2.new(0.5, 0)
+	logoButton.Position = UDim2.new(0.5, 0, 0, 100)
+
 	logoButton.Visible = true
 end
 
@@ -2665,6 +2764,9 @@ local function closeScript()
 	Config.FlyEnabled = false
 	Config.InstantPrompt = false
 	
+	Config.NoclipEnabled = false
+	Noclip:Stop()
+
 	stopFly()
 	disconnectWalkSpeedLock()
 	
@@ -2767,17 +2869,28 @@ addConnection(player.CharacterAdded:Connect(function(character)
 	end
 
 	local resumeFly = Config.FlyEnabled
+	local resumeNoclip = Config.NoclipEnabled
 
+	Config.FlyEnabled = false
 	stopFly()
+
+	Config.NoclipEnabled = false
+	Noclip:Stop()
+
 	setupWalkSpeedLock(character)
 
-	if resumeFly then
-		task.wait(0.7)
+	task.wait(0.7)
 
-		if not scriptClosed then
-			Config.FlyEnabled = true
-			startFly()
-		end
+	if scriptClosed then
+		return
+	end
+
+	if resumeNoclip then
+		Noclip:SetEnabled(true)
+	end
+
+	if resumeFly then
+		setFlyEnabled(true)
 	end
 
 	updateCharacterInterface()
