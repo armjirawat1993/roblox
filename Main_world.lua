@@ -903,6 +903,7 @@ screenGui.Name = "ExampleTabMenu"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.DisplayOrder = 2147483647
 screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
@@ -912,6 +913,7 @@ mainFrame.Position = UDim2.new(0.5, -270, 0.5, -220)
 mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
+mainFrame.ZIndex = 100
 mainFrame.Parent = screenGui
 
 local mainCorner = Instance.new("UICorner")
@@ -934,6 +936,7 @@ titleBar.Size = UDim2.new(1, 0, 0, 48)
 titleBar.BackgroundColor3 = Color3.fromRGB(36, 36, 44)
 titleBar.BorderSizePixel = 0
 titleBar.Active = true
+titleBar.ZIndex = 101
 titleBar.Parent = mainFrame
 
 local titleCorner = Instance.new("UICorner")
@@ -954,6 +957,7 @@ titleLogo.Position = UDim2.fromOffset(9, 7)
 titleLogo.BackgroundTransparency = 1
 titleLogo.Image = LOGO_ASSET_ID
 titleLogo.ScaleType = Enum.ScaleType.Fit
+titleLogo.ZIndex = 102
 titleLogo.Parent = titleBar
 
 local titleLabel = Instance.new("TextLabel")
@@ -965,6 +969,7 @@ titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 titleLabel.TextSize = 19
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.ZIndex = 102
 titleLabel.Parent = titleBar
 
 -- ปุ่มย่อ
@@ -978,6 +983,7 @@ minimizeButton.Text = "—"
 minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 minimizeButton.TextSize = 20
 minimizeButton.Font = Enum.Font.GothamBold
+minimizeButton.ZIndex = 102
 minimizeButton.Parent = titleBar
 
 local minimizeCorner = Instance.new("UICorner")
@@ -995,6 +1001,7 @@ closeButton.Text = "X"
 closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeButton.TextSize = 15
 closeButton.Font = Enum.Font.GothamBold
+closeButton.ZIndex = 102
 closeButton.Parent = titleBar
 
 local closeCorner = Instance.new("UICorner")
@@ -2603,6 +2610,7 @@ logoButton.Image = LOGO_ASSET_ID
 logoButton.ScaleType = Enum.ScaleType.Fit
 logoButton.Visible = false
 logoButton.Active = true
+logoButton.ZIndex = 1000
 logoButton.Parent = screenGui
 
 local logoCorner = Instance.new("UICorner")
