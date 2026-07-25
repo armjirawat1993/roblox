@@ -47,8 +47,10 @@ local Config = {
 	
 	-- Damage / Auto Attack
 	AutoAttackEnabled = false,
-
-	AttackRadius = 12,
+	
+	LockAttackRadius = true,
+	AttackRadius = 25,
+	LockedAttackRadius = 25,
 	MinAttackRadius = 3,
 	MaxAttackRadius = 50,
 
@@ -82,7 +84,7 @@ local nextPositionId = 0
 
 local autoAttackConnection = nil
 local lastAutoAttackTime = 0
-
+local radiusLockConnection = nil
 --==================================================
 -- [4] CONNECTION MANAGER
 --==================================================
@@ -681,6 +683,44 @@ local function setAutoAttackEnabled(enabled)
 		startAutoAttack()
 	else
 		stopAutoAttack()
+	end
+end
+
+local function stopRadiusLock()
+	if radiusLockConnection then
+		radiusLockConnection:Disconnect()
+		radiusLockConnection = nil
+	end
+end
+
+local function startRadiusLock()
+	stopRadiusLock()
+
+	Config.LockAttackRadius = true
+	Config.LockedAttackRadius = Config.AttackRadius
+
+	radiusLockConnection = RunService.Heartbeat:Connect(function()
+		if scriptClosed or not Config.LockAttackRadius then
+			return
+		end
+
+		if Config.AttackRadius ~= Config.LockedAttackRadius then
+			Config.AttackRadius = Config.LockedAttackRadius
+
+			updateAttackRadiusSlider()
+			updateDamageInterface()
+		end
+	end)
+end
+
+local function setRadiusLockEnabled(enabled)
+	Config.LockAttackRadius = enabled
+
+	if enabled then
+		Config.LockedAttackRadius = Config.AttackRadius
+		startRadiusLock()
+	else
+		stopRadiusLock()
 	end
 end
 
@@ -1940,6 +1980,13 @@ local onlyNPCButton = createPageButton(
 	5
 )
 
+local lockRadiusButton = createPageButton(
+	damageContent,
+	"Lock Radius: ON",
+	5
+)
+
+
 local damageInfoLabel = Instance.new("TextLabel")
 damageInfoLabel.Size = UDim2.new(1, 0, 0, 90)
 damageInfoLabel.BackgroundTransparency = 1
@@ -1971,7 +2018,12 @@ local function updateDamageInterface()
 		"Only NPC",
 		Config.OnlyNPC
 	)
-
+	
+	setButtonState(
+		lockRadiusButton,
+		"Lock Radius",
+		Config.LockAttackRadius
+	)
 	attackRadiusLabel.Text =
 		"Attack Radius: "
 		.. tostring(Config.AttackRadius)
@@ -2010,10 +2062,7 @@ local function setAttackRadiusFromPosition(position)
 	end
 
 	local percent = math.clamp(
-		(
-			position.X
-			- attackRadiusSlider.AbsolutePosition.X
-		) / width,
+		(position.X - attackRadiusSlider.AbsolutePosition.X) / width,
 		0,
 		1
 	)
@@ -2025,8 +2074,11 @@ local function setAttackRadiusFromPosition(position)
 			- Config.MinAttackRadius
 		) * percent
 
-	Config.AttackRadius =
-		math.floor(value + 0.5)
+	Config.AttackRadius = math.floor(value + 0.5)
+
+	if Config.LockAttackRadius then
+		Config.LockedAttackRadius = Config.AttackRadius
+	end
 
 	updateAttackRadiusSlider()
 	updateDamageInterface()
@@ -2169,6 +2221,14 @@ addConnection(damageTab.MouseButton1Click:Connect(function()
 
 	updateAttackRadiusSlider()
 	updateAttackSpeedSlider()
+	updateDamageInterface()
+end))
+
+addConnection(lockRadiusButton.MouseButton1Click:Connect(function()
+	setRadiusLockEnabled(
+		not Config.LockAttackRadius
+	)
+
 	updateDamageInterface()
 end))
 
@@ -2342,11 +2402,15 @@ local function closeScript()
 	Config.InfiniteJump = false
 	Config.FlyEnabled = false
 	Config.InstantPrompt = false
-	Config.AutoAttackEnabled = false
 	
 	stopFly()
 	disconnectWalkSpeedLock()
+	
+	Config.AutoAttackEnabled = false
 	stopAutoAttack()
+	
+	Config.LockAttackRadius = false
+	stopRadiusLock()
 
 	local humanoid = getHumanoid()
 
