@@ -60,6 +60,14 @@ local Config = {
 
 	MaxAttackTargets = 20,
 	OnlyNPC = true,
+	-- Auto Click
+	AutoClickEnabled = false,
+
+	AutoClickInterval = 0.10,
+	MinAutoClickInterval = 0.01,
+	MaxAutoClickInterval = 1.00,
+
+	AutoClickKey = Enum.KeyCode.G,
 }
 
 
@@ -85,6 +93,9 @@ local nextPositionId = 0
 local autoAttackConnection = nil
 local lastAutoAttackTime = 0
 local radiusLockConnection = nil
+
+local autoClickConnection = nil
+local lastAutoClickTime = 0
 --==================================================
 -- [4] CONNECTION MANAGER
 --==================================================
@@ -725,6 +736,75 @@ local function setRadiusLockEnabled(enabled)
 end
 
 --==================================================
+-- [10.3] AUTO CLICK
+--==================================================
+
+local function performAutoClick()
+	if scriptClosed or not Config.AutoClickEnabled then
+		return
+	end
+
+	local tool = getEquippedTool()
+
+	-- ทำงานเฉพาะตอนถือ Tool
+	if not tool then
+		return
+	end
+
+	tool:Activate()
+end
+
+local function stopAutoClick()
+	Config.AutoClickEnabled = false
+
+	if autoClickConnection then
+		autoClickConnection:Disconnect()
+		autoClickConnection = nil
+	end
+end
+
+local function startAutoClick()
+	if autoClickConnection then
+		autoClickConnection:Disconnect()
+		autoClickConnection = nil
+	end
+
+	Config.AutoClickEnabled = true
+	lastAutoClickTime = 0
+
+	autoClickConnection = RunService.Heartbeat:Connect(function()
+		if scriptClosed or not Config.AutoClickEnabled then
+			return
+		end
+
+		local currentTime = os.clock()
+
+		if currentTime - lastAutoClickTime
+			< Config.AutoClickInterval then
+
+			return
+		end
+
+		lastAutoClickTime = currentTime
+		performAutoClick()
+	end)
+end
+
+local function setAutoClickEnabled(enabled)
+	if enabled then
+		startAutoClick()
+	else
+		stopAutoClick()
+	end
+end
+
+local function toggleAutoClick()
+	setAutoClickEnabled(
+		not Config.AutoClickEnabled
+	)
+end
+
+--==================================================
 -- [11] REMOVE OLD GUI
 --==================================================
 
@@ -935,13 +1015,16 @@ local characterPage, characterTab, characterContent =
 	createTab("Character", 1)
 
 local worldPage, worldTab, worldContent =
-	createTab("World", 2)
+	createTab("Teleport", 2)
 
 local positionPage, positionTab, positionContent =
 	createTab("Position", 3)
 
 local damagePage, damageTab, damageContent =
-	createTab("Damage", 4)
+	createTab("Auto Damage", 4)
+
+local autoClickPage, autoClickTab, autoClickContent =
+	createTab("Auto Click", 5)
 
 local function showTab(tabName)
 	for name, page in pairs(pages) do
@@ -2199,6 +2282,185 @@ addConnection(onlyNPCButton.MouseButton1Click:Connect(function()
 	updateDamageInterface()
 end))
 
+addConnection(lockRadiusButton.MouseButton1Click:Connect(function()
+	setRadiusLockEnabled(
+		not Config.LockAttackRadius
+	)
+
+	updateDamageInterface()
+end))
+
+
+--==================================================
+-- [24.5] AUTO CLICK TAB GUI
+--==================================================
+
+local autoClickTitle = Instance.new("TextLabel")
+autoClickTitle.Size = UDim2.new(1, 0, 0, 35)
+autoClickTitle.BackgroundTransparency = 1
+autoClickTitle.Text = "Auto Click"
+autoClickTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoClickTitle.TextSize = 20
+autoClickTitle.Font = Enum.Font.GothamBold
+autoClickTitle.TextXAlignment = Enum.TextXAlignment.Left
+autoClickTitle.LayoutOrder = 1
+autoClickTitle.Parent = autoClickContent
+
+local autoClickButton = createPageButton(
+	autoClickContent,
+	"Auto Click: OFF",
+	2
+)
+
+local autoClickSpeedGroup,
+	autoClickSpeedLabel,
+	autoClickSpeedSlider,
+	autoClickSpeedFill,
+	autoClickSpeedKnob = createSliderGroup(
+	autoClickContent,
+	"Click Interval: "
+		.. string.format("%.2f", Config.AutoClickInterval),
+	3
+)
+
+local autoClickInfoLabel = Instance.new("TextLabel")
+autoClickInfoLabel.Size = UDim2.new(1, 0, 0, 90)
+autoClickInfoLabel.BackgroundTransparency = 1
+autoClickInfoLabel.Text =
+	"กด G เพื่อเปิดหรือปิด Auto Click\n"
+	.. "ทำงานเฉพาะตอนถือ Tool\n"
+	.. "0.01 = คลิกเร็วที่สุด"
+autoClickInfoLabel.TextColor3 =
+	Color3.fromRGB(165, 165, 175)
+autoClickInfoLabel.TextSize = 13
+autoClickInfoLabel.Font = Enum.Font.Gotham
+autoClickInfoLabel.TextWrapped = true
+autoClickInfoLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+autoClickInfoLabel.LayoutOrder = 4
+autoClickInfoLabel.Parent = autoClickContent
+
+local function updateAutoClickInterface()
+	if scriptClosed then
+		return
+	end
+
+	setButtonState(
+		autoClickButton,
+		"Auto Click",
+		Config.AutoClickEnabled
+	)
+
+	autoClickSpeedLabel.Text =
+		"Click Interval: "
+		.. string.format(
+			"%.2f",
+			Config.AutoClickInterval
+		)
+end
+
+local function updateAutoClickSlider()
+	updateSliderVisual(
+		Config.AutoClickInterval,
+		Config.MinAutoClickInterval,
+		Config.MaxAutoClickInterval,
+		autoClickSpeedFill,
+		autoClickSpeedKnob
+	)
+end
+
+local function setAutoClickSpeedFromPosition(position)
+	local width = autoClickSpeedSlider.AbsoluteSize.X
+
+	if width <= 0 then
+		return
+	end
+
+	local percent = math.clamp(
+		(
+			position.X
+			- autoClickSpeedSlider.AbsolutePosition.X
+		) / width,
+		0,
+		1
+	)
+
+	local value =
+		Config.MinAutoClickInterval
+		+ (
+			Config.MaxAutoClickInterval
+			- Config.MinAutoClickInterval
+		) * percent
+
+	Config.AutoClickInterval =
+		math.floor(value * 100 + 0.5) / 100
+
+	Config.AutoClickInterval = math.clamp(
+		Config.AutoClickInterval,
+		Config.MinAutoClickInterval,
+		Config.MaxAutoClickInterval
+	)
+
+	updateAutoClickSlider()
+	updateAutoClickInterface()
+end
+
+local draggingAutoClickSlider = false
+
+local function beginAutoClickSlider(input)
+	if input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		draggingAutoClickSlider = true
+		setAutoClickSpeedFromPosition(input.Position)
+	end
+end
+
+addConnection(
+	autoClickSpeedSlider.InputBegan:Connect(
+		beginAutoClickSlider
+	)
+)
+
+addConnection(
+	autoClickSpeedKnob.InputBegan:Connect(
+		beginAutoClickSlider
+	)
+)
+
+addConnection(UserInputService.InputChanged:Connect(function(input)
+	if input.UserInputType
+			~= Enum.UserInputType.MouseMovement
+		and input.UserInputType
+			~= Enum.UserInputType.Touch then
+
+		return
+	end
+
+	if draggingAutoClickSlider then
+		setAutoClickSpeedFromPosition(
+			input.Position
+		)
+	end
+end))
+
+addConnection(UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		draggingAutoClickSlider = false
+	end
+end))
+
+addConnection(autoClickButton.MouseButton1Click:Connect(function()
+	toggleAutoClick()
+	updateAutoClickInterface()
+end))
+
 --==================================================
 -- [25] TAB EVENTS
 --==================================================
@@ -2208,7 +2470,7 @@ addConnection(characterTab.MouseButton1Click:Connect(function()
 end))
 
 addConnection(worldTab.MouseButton1Click:Connect(function()
-	showTab("World")
+	showTab("Teleport")
 end))
 
 addConnection(positionTab.MouseButton1Click:Connect(function()
@@ -2217,19 +2479,19 @@ addConnection(positionTab.MouseButton1Click:Connect(function()
 end))
 
 addConnection(damageTab.MouseButton1Click:Connect(function()
-	showTab("Damage")
+	showTab("Auto Damage")
 
 	updateAttackRadiusSlider()
 	updateAttackSpeedSlider()
 	updateDamageInterface()
 end))
 
-addConnection(lockRadiusButton.MouseButton1Click:Connect(function()
-	setRadiusLockEnabled(
-		not Config.LockAttackRadius
-	)
 
-	updateDamageInterface()
+addConnection(autoClickTab.MouseButton1Click:Connect(function()
+	showTab("Auto Click")
+
+	updateAutoClickSlider()
+	updateAutoClickInterface()
 end))
 
 
@@ -2411,6 +2673,9 @@ local function closeScript()
 	
 	Config.LockAttackRadius = false
 	stopRadiusLock()
+	
+	Config.AutoClickEnabled = false
+	stopAutoClick()
 
 	local humanoid = getHumanoid()
 
@@ -2477,6 +2742,17 @@ addConnection(UserInputService.InputBegan:Connect(function(
 		else
 			restoreMenu()
 		end
+
+		return
+	end
+
+	if UserInputService:GetFocusedTextBox() then
+		return
+	end
+
+	if input.KeyCode == Config.AutoClickKey then
+		toggleAutoClick()
+		updateAutoClickInterface()
 	end
 end))
 
@@ -2536,4 +2812,7 @@ task.defer(function()
 	updateAttackRadiusSlider()
 	updateAttackSpeedSlider()
 	updateDamageInterface()
+	
+	updateAutoClickSlider()
+	updateAutoClickInterface()
 end)
