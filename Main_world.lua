@@ -78,7 +78,7 @@ local flyVelocity = nil
 local flyGyro = nil
 
 local savedPositions = {}
-local nextPositionId = 
+local nextPositionId = 0
 
 local autoAttackConnection = nil
 local lastAutoAttackTime = 0
