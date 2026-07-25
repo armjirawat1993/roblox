@@ -16,7 +16,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 --==================================================
 
 -- เปลี่ยนเป็น Asset ID โลโก้ของคุณ
-local LOGO_ASSET_ID = "rbxassetid://1234567890"
+local LOGO_ASSET_ID = "rbxassetid://119090588699199"
 
 local Config = {
 	-- Walk Speed
