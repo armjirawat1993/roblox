@@ -24,7 +24,7 @@ end
 local CONFIG = {
 	SearchInterval = 0.25,
 	RuneKeyword = "rune",
-	AboveDistance = 3,
+	AboveDistance = 0,
 	AutoEInterval = 0.01,
 	AutoEHoldTime = 0.01,
 	AutoClickInterval = 0.01,
