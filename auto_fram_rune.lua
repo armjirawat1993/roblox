@@ -351,24 +351,64 @@ end
 
 -- Crystal luck finder
 
-local function parseLuck(text)
-	if type(text) ~= "string" then
+local function parseLuck(value)
+	if value == nil then
 		return nil
 	end
 
-	local value = string.match(
-		text,
-		"[Ll]uck%s*:%s*%+?(%-?%d+%.?%d*)%s*%%"
+	if typeof(value) == "number" then
+		return tonumber(value)
+	end
+
+	local text = tostring(value)
+
+	-- ลบ RichText เช่น <font>Luck: +82%</font>
+	text = text:gsub("<[^>]->", "")
+	text = text:gsub("\194\160", " ")
+	text = text:gsub("%s+", " ")
+
+	-- รูปแบบหลัก: Luck: +82%
+	local numberText = text:match(
+		"[Ll][Uu][Cc][Kk]%s*:%s*%+?%s*(%-?%d+%.?%d*)%s*%%"
 	)
 
-	if not value then
-		value = string.match(
-			text,
-			"%+?(%-?%d+%.?%d*)%s*%%"
+	-- Fallback: +82%
+	if not numberText then
+		numberText = text:match(
+			"%+%s*(%d+%.?%d*)%s*%%"
 		)
 	end
 
-	return value and tonumber(value) or nil
+	-- Fallback: 82%
+	if not numberText then
+		numberText = text:match(
+			"(%-?%d+%.?%d*)%s*%%"
+		)
+	end
+
+	return numberText and tonumber(numberText) or nil
+end
+
+local function readLuckObject(object)
+	if not object then
+		return nil
+	end
+
+	if object:IsA("TextLabel")
+		or object:IsA("TextButton")
+		or object:IsA("TextBox") then
+
+		return parseLuck(object.Text)
+	end
+
+	if object:IsA("StringValue")
+		or object:IsA("NumberValue")
+		or object:IsA("IntValue") then
+
+		return parseLuck(object.Value)
+	end
+
+	return nil
 end
 
 local function getCrystalLuck(crystal)
@@ -376,37 +416,55 @@ local function getCrystalLuck(crystal)
 		return nil
 	end
 
+	-- โครงสร้างหลัก:
+	-- Workspace > Things > Crystals > CrystalObject
+	-- > CrystalHover > LuckBoosy
 	local crystalHover =
 		crystal:FindFirstChild("CrystalHover", true)
 
-	if not crystalHover then
-		return nil
+	if crystalHover then
+		local exactNames = {
+			"LuckBoosy",
+			"LuckBoost",
+			"LuckBoostText",
+		}
+
+		for _, objectName in ipairs(exactNames) do
+			local luckObject =
+				crystalHover:FindFirstChild(objectName, true)
+
+			local luck = readLuckObject(luckObject)
+
+			if luck ~= nil then
+				return luck
+			end
+		end
+
+		-- ชื่อ Object อาจต่างกัน แต่ Text ยังเป็น Luck: +82%
+		for _, object in ipairs(crystalHover:GetDescendants()) do
+			local luck = readLuckObject(object)
+
+			if luck ~= nil then
+				return luck
+			end
+		end
 	end
 
-	local luckObject =
-		crystalHover:FindFirstChild("LuckBoosy", true)
-		or crystalHover:FindFirstChild("LuckBoost", true)
-		or crystalHover:FindFirstChild("LuckBoostText", true)
+	-- Fallback: ค้นทั้ง Crystal
+	for _, object in ipairs(crystal:GetDescendants()) do
+		local lowerName = string.lower(object.Name)
 
-	if not luckObject then
-		return nil
-	end
+		if lowerName == "luckboosy"
+			or lowerName == "luckboost"
+			or lowerName == "luckboosttext"
+			or lowerName:find("luck", 1, true) then
 
-	if luckObject:IsA("TextLabel")
-		or luckObject:IsA("TextButton")
-		or luckObject:IsA("TextBox") then
+			local luck = readLuckObject(object)
 
-		return parseLuck(luckObject.Text)
-	end
-
-	if luckObject:IsA("StringValue") then
-		return parseLuck(luckObject.Value)
-	end
-
-	if luckObject:IsA("NumberValue")
-		or luckObject:IsA("IntValue") then
-
-		return tonumber(luckObject.Value)
+			if luck ~= nil then
+				return luck
+			end
+		end
 	end
 
 	return nil
