@@ -6,6 +6,7 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -21,7 +22,7 @@ local LOGO_ASSET_ID = "rbxassetid://119090588699199"
 local Config = {
 	-- Walk Speed
 	WalkSpeedEnabled = false,
-	LockWalkSpeed = true,
+	LockWalkSpeed = false,
 
 	WalkSpeed = 50,
 	NormalWalkSpeed = 16,
@@ -41,15 +42,15 @@ local Config = {
 
 	-- Prompt
 	InstantPrompt = false,
-	
+
 	-- Noclip
 	NoclipEnabled = false,
 	-- GUI
 	ToggleKey = Enum.KeyCode.RightShift,
-	
+
 	-- Damage / Auto Attack
 	AutoAttackEnabled = false,
-	
+
 	LockAttackRadius = true,
 	AttackRadius = 25,
 	LockedAttackRadius = 25,
@@ -65,18 +66,34 @@ local Config = {
 	-- Auto Click
 	AutoClickEnabled = false,
 
-	AutoClickInterval = 0.10,
+	AutoClickInterval = 0.01,
 	MinAutoClickInterval = 0.01,
 	MaxAutoClickInterval = 1.00,
 
 	AutoClickKey = Enum.KeyCode.G,
-	
+
+	-- Auto E
+	AutoEEnabled = false,
+	AutoEInterval = 0.01,
+	AutoEHoldTime = 0.01,
+
+	-- Crystals
+	RemoveCrystalLightEnabled = true,
+	RemoveLowPriceCrystalsEnabled = false,
+	MinimumCrystalPrice = 10000000,
+	CrystalScanInterval = 0.1,
+
+	-- Boulder ESP
+	BoulderESPEnabled = true,
+
 }
 
 
 --==================================================
 -- [3] STATE
 --==================================================
+
+local UI = { State = {} }
 
 local scriptClosed = false
 local selectedPlayerName = nil
@@ -99,6 +116,16 @@ local radiusLockConnection = nil
 
 local autoClickConnection = nil
 local lastAutoClickTime = 0
+
+local autoEThread = nil
+local visibleEPrompts = {}
+
+local crystalLoopThread = nil
+local crystalOriginalBrightness = {}
+local hiddenCrystalParts = {}
+
+local boulderESPConnection = nil
+local BOULDER_ESP_NAME = "MainWorldBoulderESP"
 
 local Noclip = {
 	Connection = nil,
@@ -883,6 +910,460 @@ local function toggleAutoClick()
 	)
 end
 
+
+local Addons = {}
+
+do
+	--==================================================
+	-- [10.4] AUTO E / CRYSTALS / BOULDER ESP
+	--==================================================
+
+	function Addons.setAutoEEnabled(enabled)
+		Config.AutoEEnabled = enabled
+
+		if autoEThread then
+			task.cancel(autoEThread)
+			autoEThread = nil
+		end
+
+		if not enabled then
+			return
+		end
+
+		autoEThread = task.spawn(function()
+			while not scriptClosed and Config.AutoEEnabled do
+				local rootPart = getRootPart()
+				local selectedPrompt = nil
+				local selectedDistance = math.huge
+
+				for prompt in pairs(visibleEPrompts) do
+					if not prompt.Parent
+						or not prompt.Enabled
+						or prompt.KeyboardKeyCode ~= Enum.KeyCode.E then
+
+						visibleEPrompts[prompt] = nil
+					else
+						local parent = prompt.Parent
+						local position = nil
+
+						if parent:IsA("Attachment") then
+							position = parent.WorldPosition
+						elseif parent:IsA("BasePart") then
+							position = parent.Position
+						end
+
+						if rootPart and position then
+							local distance =
+								(position - rootPart.Position).Magnitude
+
+							if distance < selectedDistance then
+								selectedDistance = distance
+								selectedPrompt = prompt
+							end
+						elseif not selectedPrompt then
+							selectedPrompt = prompt
+						end
+					end
+				end
+
+				if selectedPrompt then
+					pcall(function()
+						selectedPrompt:InputHoldBegin()
+						task.wait(math.max(
+							selectedPrompt.HoldDuration,
+							Config.AutoEHoldTime
+						))
+
+						if Config.AutoEEnabled
+							and selectedPrompt.Parent then
+
+							selectedPrompt:InputHoldEnd()
+						end
+					end)
+				end
+
+				task.wait(Config.AutoEInterval)
+			end
+
+			autoEThread = nil
+		end)
+	end
+
+	addConnection(ProximityPromptService.PromptShown:Connect(function(
+		prompt,
+		_inputType
+	)
+		if prompt.KeyboardKeyCode == Enum.KeyCode.E then
+			visibleEPrompts[prompt] = true
+		end
+	end))
+
+	addConnection(ProximityPromptService.PromptHidden:Connect(function(prompt)
+		visibleEPrompts[prompt] = nil
+	end))
+
+	local function getCrystalsFolder()
+		local things = Workspace:FindFirstChild("Things")
+		return things and things:FindFirstChild("Crystals")
+	end
+
+	function Addons.parseCrystalValue(value)
+		if value == nil then
+			return nil
+		end
+
+		if typeof(value) == "number" then
+			return value
+		end
+
+		local valueText = tostring(value)
+			:gsub(",", "")
+			:gsub("%s+", "")
+			:gsub("%$", "")
+			:lower()
+
+		local numberText = valueText:match("%-?%d+%.?%d*")
+		local number = numberText and tonumber(numberText)
+
+		if not number then
+			return nil
+		end
+
+		if valueText:find("b", 1, true) then
+			number *= 1000000000
+		elseif valueText:find("m", 1, true) then
+			number *= 1000000
+		elseif valueText:find("k", 1, true) then
+			number *= 1000
+		end
+
+		return number
+	end
+
+	local function getCrystalValue(crystal)
+		if crystal:IsA("NumberValue")
+			or crystal:IsA("IntValue")
+			or crystal:IsA("StringValue") then
+
+			return Addons.parseCrystalValue(crystal.Value)
+		end
+
+		for name, value in pairs(crystal:GetAttributes()) do
+			local lower = string.lower(name)
+
+			if lower:find("value", 1, true)
+				or lower:find("price", 1, true)
+				or lower == "worth"
+				or lower == "cost" then
+
+				local parsed = Addons.parseCrystalValue(value)
+
+				if parsed then
+					return parsed
+				end
+			end
+		end
+
+		for _, object in ipairs(crystal:GetDescendants()) do
+			local lower = string.lower(object.Name)
+			local relevant =
+				lower:find("value", 1, true)
+				or lower:find("price", 1, true)
+				or lower == "worth"
+				or lower == "cost"
+
+			if relevant then
+				if object:IsA("ValueBase") then
+					local parsed = Addons.parseCrystalValue(object.Value)
+
+					if parsed then
+						return parsed
+					end
+				elseif object:IsA("TextLabel")
+					or object:IsA("TextButton")
+					or object:IsA("TextBox") then
+
+					local parsed = Addons.parseCrystalValue(object.Text)
+
+					if parsed then
+						return parsed
+					end
+				end
+			end
+		end
+
+		return Addons.parseCrystalValue(crystal.Name)
+	end
+
+	local function restoreCrystal(crystal)
+		local saved = hiddenCrystalParts[crystal]
+
+		if not saved then
+			return
+		end
+
+		for object, value in pairs(saved) do
+			if object and object.Parent then
+				if object:IsA("BasePart") then
+					object.LocalTransparencyModifier = value
+				elseif object:IsA("ParticleEmitter")
+					or object:IsA("Trail")
+					or object:IsA("Beam") then
+
+					object.Enabled = value
+				end
+			end
+		end
+
+		hiddenCrystalParts[crystal] = nil
+	end
+
+	local function hideCrystal(crystal)
+		if hiddenCrystalParts[crystal] then
+			return
+		end
+
+		local saved = {}
+		hiddenCrystalParts[crystal] = saved
+
+		for _, object in ipairs(crystal:GetDescendants()) do
+			if object:IsA("BasePart") then
+				saved[object] = object.LocalTransparencyModifier
+				object.LocalTransparencyModifier = 1
+			elseif object:IsA("ParticleEmitter")
+				or object:IsA("Trail")
+				or object:IsA("Beam") then
+
+				saved[object] = object.Enabled
+				object.Enabled = false
+			end
+		end
+	end
+
+	function Addons.restoreAllCrystals()
+		for crystal in pairs(hiddenCrystalParts) do
+			if crystal and crystal.Parent then
+				restoreCrystal(crystal)
+			end
+		end
+
+		table.clear(hiddenCrystalParts)
+	end
+
+	function Addons.applyCrystalLights()
+		local folder = getCrystalsFolder()
+
+		if not folder then
+			return 0
+		end
+
+		local changed = 0
+
+		for _, object in ipairs(folder:GetDescendants()) do
+			if object.Name == "CrystalGlow"
+				and object:IsA("Light") then
+
+				if crystalOriginalBrightness[object] == nil then
+					crystalOriginalBrightness[object] =
+						object.Brightness
+				end
+
+				if Config.RemoveCrystalLightEnabled then
+					object.Brightness = 0
+					changed += 1
+				end
+			end
+		end
+
+		return changed
+	end
+
+	function Addons.restoreCrystalLights()
+		for light, brightness in pairs(crystalOriginalBrightness) do
+			if light and light.Parent then
+				light.Brightness = brightness
+			end
+		end
+
+		table.clear(crystalOriginalBrightness)
+	end
+
+	function Addons.applyLowPriceFilter()
+		local folder = getCrystalsFolder()
+
+		if not folder then
+			return 0, 0, 0
+		end
+
+		local checked = 0
+		local hidden = 0
+		local noValue = 0
+
+		for _, crystal in ipairs(folder:GetChildren()) do
+			checked += 1
+
+			local value = getCrystalValue(crystal)
+
+			if value then
+				if Config.RemoveLowPriceCrystalsEnabled
+					and value < Config.MinimumCrystalPrice then
+
+					hideCrystal(crystal)
+					hidden += 1
+				else
+					restoreCrystal(crystal)
+				end
+			else
+				noValue += 1
+			end
+		end
+
+		return checked, hidden, noValue
+	end
+
+	local BOULDER_COLORS = {
+		Color3.fromRGB(0, 200, 255),
+		Color3.fromRGB(0, 255, 100),
+		Color3.fromRGB(255, 230, 0),
+		Color3.fromRGB(180, 0, 255),
+		Color3.fromRGB(0, 80, 255),
+		Color3.fromRGB(255, 70, 180),
+	}
+
+	local function getBouldersFolder()
+		local mountain =
+			Workspace:FindFirstChild("MountainDecorations")
+
+		return mountain and mountain:FindFirstChild("Boulders")
+	end
+
+	local function addBoulderESP(container, index)
+		if not Config.BoulderESPEnabled or not container then
+			return
+		end
+
+		if not (
+			container:IsA("Model")
+			or container:IsA("Folder")
+			or container:IsA("BasePart")
+		) then
+			return
+		end
+
+		local highlight =
+			container:FindFirstChild(BOULDER_ESP_NAME)
+
+		if not highlight then
+			highlight = Instance.new("Highlight")
+			highlight.Name = BOULDER_ESP_NAME
+			highlight.Adornee = container
+			highlight.FillTransparency = 0.45
+			highlight.OutlineTransparency = 0
+			highlight.DepthMode =
+				Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.Parent = container
+		end
+
+		local color =
+			BOULDER_COLORS[
+				((index or 1) - 1) % #BOULDER_COLORS + 1
+			]
+
+		highlight.FillColor = color
+		highlight.OutlineColor = color
+		highlight.Enabled = true
+	end
+
+	local function removeBoulderESP()
+		local folder = getBouldersFolder()
+
+		if not folder then
+			return
+		end
+
+		for _, object in ipairs(folder:GetDescendants()) do
+			if object:IsA("Highlight")
+				and object.Name == BOULDER_ESP_NAME then
+
+				object:Destroy()
+			end
+		end
+	end
+
+	function Addons.scanBoulderESP()
+		local folder = getBouldersFolder()
+
+		if not folder then
+			return 0
+		end
+
+		local list = folder:GetChildren()
+
+		table.sort(list, function(a, b)
+			return string.lower(a.Name)
+				< string.lower(b.Name)
+		end)
+
+		for index, container in ipairs(list) do
+			addBoulderESP(container, index)
+		end
+
+		return #list
+	end
+
+	function Addons.setBoulderESPEnabled(enabled)
+		Config.BoulderESPEnabled = enabled
+
+		if boulderESPConnection then
+			boulderESPConnection:Disconnect()
+			boulderESPConnection = nil
+		end
+
+		if not enabled then
+			removeBoulderESP()
+			return
+		end
+
+		Addons.scanBoulderESP()
+
+		local folder = getBouldersFolder()
+
+		if folder then
+			boulderESPConnection =
+				folder.ChildAdded:Connect(function(container)
+					task.wait()
+					addBoulderESP(container, #folder:GetChildren())
+				end)
+		end
+	end
+
+	function Addons.stopCrystalLoop()
+		if crystalLoopThread then
+			task.cancel(crystalLoopThread)
+			crystalLoopThread = nil
+		end
+	end
+
+	function Addons.startCrystalLoop()
+		Addons.stopCrystalLoop()
+
+		crystalLoopThread = task.spawn(function()
+			while not scriptClosed do
+				if Config.RemoveCrystalLightEnabled then
+					Addons.applyCrystalLights()
+				end
+
+				if Config.RemoveLowPriceCrystalsEnabled then
+					Addons.applyLowPriceFilter()
+				end
+
+				task.wait(Config.CrystalScanInterval)
+			end
+		end)
+	end
+
+end
+
 --==================================================
 -- [11] REMOVE OLD GUI
 --==================================================
@@ -898,136 +1379,136 @@ end
 -- [12] GUI ROOT
 --==================================================
 
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "ExampleTabMenu"
-screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = true
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.DisplayOrder = 2147483647
-screenGui.Parent = playerGui
+UI.screenGui = Instance.new("ScreenGui")
+UI.screenGui.Name = "ExampleTabMenu"
+UI.screenGui.ResetOnSpawn = false
+UI.screenGui.IgnoreGuiInset = true
+UI.screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+UI.screenGui.DisplayOrder = 2147483647
+UI.screenGui.Parent = playerGui
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.fromOffset(540, 440)
-mainFrame.Position = UDim2.new(0.5, -270, 0.5, -220)
-mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
-mainFrame.BorderSizePixel = 0
-mainFrame.Active = true
-mainFrame.ZIndex = 100
-mainFrame.Parent = screenGui
+UI.mainFrame = Instance.new("Frame")
+UI.mainFrame.Name = "MainFrame"
+UI.mainFrame.Size = UDim2.fromOffset(540, 440)
+UI.mainFrame.Position = UDim2.new(0.5, -270, 0.5, -220)
+UI.mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
+UI.mainFrame.BorderSizePixel = 0
+UI.mainFrame.Active = true
+UI.mainFrame.ZIndex = 100
+UI.mainFrame.Parent = UI.screenGui
 
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 12)
-mainCorner.Parent = mainFrame
+UI.mainCorner = Instance.new("UICorner")
+UI.mainCorner.CornerRadius = UDim.new(0, 12)
+UI.mainCorner.Parent = UI.mainFrame
 
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(80, 80, 95)
-mainStroke.Thickness = 1
-mainStroke.Parent = mainFrame
+UI.mainStroke = Instance.new("UIStroke")
+UI.mainStroke.Color = Color3.fromRGB(80, 80, 95)
+UI.mainStroke.Thickness = 1
+UI.mainStroke.Parent = UI.mainFrame
 
 
 --==================================================
 -- [13] TITLE BAR
 --==================================================
 
-local titleBar = Instance.new("Frame")
-titleBar.Name = "TitleBar"
-titleBar.Size = UDim2.new(1, 0, 0, 48)
-titleBar.BackgroundColor3 = Color3.fromRGB(36, 36, 44)
-titleBar.BorderSizePixel = 0
-titleBar.Active = true
-titleBar.ZIndex = 101
-titleBar.Parent = mainFrame
+UI.titleBar = Instance.new("Frame")
+UI.titleBar.Name = "TitleBar"
+UI.titleBar.Size = UDim2.new(1, 0, 0, 48)
+UI.titleBar.BackgroundColor3 = Color3.fromRGB(36, 36, 44)
+UI.titleBar.BorderSizePixel = 0
+UI.titleBar.Active = true
+UI.titleBar.ZIndex = 101
+UI.titleBar.Parent = UI.mainFrame
 
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 12)
-titleCorner.Parent = titleBar
+UI.titleCorner = Instance.new("UICorner")
+UI.titleCorner.CornerRadius = UDim.new(0, 12)
+UI.titleCorner.Parent = UI.titleBar
 
-local titleBottomFix = Instance.new("Frame")
-titleBottomFix.Size = UDim2.new(1, 0, 0, 12)
-titleBottomFix.Position = UDim2.new(0, 0, 1, -12)
-titleBottomFix.BackgroundColor3 = Color3.fromRGB(36, 36, 44)
-titleBottomFix.BorderSizePixel = 0
-titleBottomFix.Parent = titleBar
+UI.titleBottomFix = Instance.new("Frame")
+UI.titleBottomFix.Size = UDim2.new(1, 0, 0, 12)
+UI.titleBottomFix.Position = UDim2.new(0, 0, 1, -12)
+UI.titleBottomFix.BackgroundColor3 = Color3.fromRGB(36, 36, 44)
+UI.titleBottomFix.BorderSizePixel = 0
+UI.titleBottomFix.Parent = UI.titleBar
 
-local titleLogo = Instance.new("ImageLabel")
-titleLogo.Name = "TitleLogo"
-titleLogo.Size = UDim2.fromOffset(34, 34)
-titleLogo.Position = UDim2.fromOffset(9, 7)
-titleLogo.BackgroundTransparency = 1
-titleLogo.Image = LOGO_ASSET_ID
-titleLogo.ScaleType = Enum.ScaleType.Fit
-titleLogo.ZIndex = 102
-titleLogo.Parent = titleBar
+UI.titleLogo = Instance.new("ImageLabel")
+UI.titleLogo.Name = "TitleLogo"
+UI.titleLogo.Size = UDim2.fromOffset(34, 34)
+UI.titleLogo.Position = UDim2.fromOffset(9, 7)
+UI.titleLogo.BackgroundTransparency = 1
+UI.titleLogo.Image = LOGO_ASSET_ID
+UI.titleLogo.ScaleType = Enum.ScaleType.Fit
+UI.titleLogo.ZIndex = 102
+UI.titleLogo.Parent = UI.titleBar
 
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -150, 1, 0)
-titleLabel.Position = UDim2.fromOffset(50, 0)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Example Tab Menu"
-titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-titleLabel.TextSize = 19
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.ZIndex = 102
-titleLabel.Parent = titleBar
+UI.titleLabel = Instance.new("TextLabel")
+UI.titleLabel.Size = UDim2.new(1, -150, 1, 0)
+UI.titleLabel.Position = UDim2.fromOffset(50, 0)
+UI.titleLabel.BackgroundTransparency = 1
+UI.titleLabel.Text = "Main World"
+UI.titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.titleLabel.TextSize = 19
+UI.titleLabel.Font = Enum.Font.GothamBold
+UI.titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.titleLabel.ZIndex = 102
+UI.titleLabel.Parent = UI.titleBar
 
 -- ปุ่มย่อ
-local minimizeButton = Instance.new("TextButton")
-minimizeButton.Name = "MinimizeButton"
-minimizeButton.Size = UDim2.fromOffset(36, 30)
-minimizeButton.Position = UDim2.new(1, -84, 0, 9)
-minimizeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 77)
-minimizeButton.BorderSizePixel = 0
-minimizeButton.Text = "—"
-minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-minimizeButton.TextSize = 20
-minimizeButton.Font = Enum.Font.GothamBold
-minimizeButton.ZIndex = 102
-minimizeButton.Parent = titleBar
+UI.minimizeButton = Instance.new("TextButton")
+UI.minimizeButton.Name = "MinimizeButton"
+UI.minimizeButton.Size = UDim2.fromOffset(36, 30)
+UI.minimizeButton.Position = UDim2.new(1, -84, 0, 9)
+UI.minimizeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 77)
+UI.minimizeButton.BorderSizePixel = 0
+UI.minimizeButton.Text = "—"
+UI.minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.minimizeButton.TextSize = 20
+UI.minimizeButton.Font = Enum.Font.GothamBold
+UI.minimizeButton.ZIndex = 102
+UI.minimizeButton.Parent = UI.titleBar
 
-local minimizeCorner = Instance.new("UICorner")
-minimizeCorner.CornerRadius = UDim.new(0, 7)
-minimizeCorner.Parent = minimizeButton
+UI.minimizeCorner = Instance.new("UICorner")
+UI.minimizeCorner.CornerRadius = UDim.new(0, 7)
+UI.minimizeCorner.Parent = UI.minimizeButton
 
 -- ปุ่มปิดอยู่ขวาสุด
-local closeButton = Instance.new("TextButton")
-closeButton.Name = "CloseButton"
-closeButton.Size = UDim2.fromOffset(36, 30)
-closeButton.Position = UDim2.new(1, -43, 0, 9)
-closeButton.BackgroundColor3 = Color3.fromRGB(190, 55, 60)
-closeButton.BorderSizePixel = 0
-closeButton.Text = "X"
-closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.TextSize = 15
-closeButton.Font = Enum.Font.GothamBold
-closeButton.ZIndex = 102
-closeButton.Parent = titleBar
+UI.closeButton = Instance.new("TextButton")
+UI.closeButton.Name = "CloseButton"
+UI.closeButton.Size = UDim2.fromOffset(36, 30)
+UI.closeButton.Position = UDim2.new(1, -43, 0, 9)
+UI.closeButton.BackgroundColor3 = Color3.fromRGB(190, 55, 60)
+UI.closeButton.BorderSizePixel = 0
+UI.closeButton.Text = "X"
+UI.closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.closeButton.TextSize = 15
+UI.closeButton.Font = Enum.Font.GothamBold
+UI.closeButton.ZIndex = 102
+UI.closeButton.Parent = UI.titleBar
 
-local closeCorner = Instance.new("UICorner")
-closeCorner.CornerRadius = UDim.new(0, 7)
-closeCorner.Parent = closeButton
+UI.closeCorner = Instance.new("UICorner")
+UI.closeCorner.CornerRadius = UDim.new(0, 7)
+UI.closeCorner.Parent = UI.closeButton
 
 
 --==================================================
 -- [14] SIDEBAR AND CONTENT AREA
 --==================================================
 
-local sidebar = Instance.new("Frame")
-sidebar.Name = "Sidebar"
-sidebar.Size = UDim2.fromOffset(130, 392)
-sidebar.Position = UDim2.fromOffset(0, 48)
-sidebar.BackgroundColor3 = Color3.fromRGB(31, 31, 38)
-sidebar.BorderSizePixel = 0
-sidebar.Parent = mainFrame
+UI.sidebar = Instance.new("Frame")
+UI.sidebar.Name = "Sidebar"
+UI.sidebar.Size = UDim2.fromOffset(130, 392)
+UI.sidebar.Position = UDim2.fromOffset(0, 48)
+UI.sidebar.BackgroundColor3 = Color3.fromRGB(31, 31, 38)
+UI.sidebar.BorderSizePixel = 0
+UI.sidebar.Parent = UI.mainFrame
 
-local contentFrame = Instance.new("Frame")
-contentFrame.Name = "ContentFrame"
-contentFrame.Size = UDim2.new(1, -130, 1, -48)
-contentFrame.Position = UDim2.fromOffset(130, 48)
-contentFrame.BackgroundTransparency = 1
-contentFrame.ClipsDescendants = true
-contentFrame.Parent = mainFrame
+UI.contentFrame = Instance.new("Frame")
+UI.contentFrame.Name = "ContentFrame"
+UI.contentFrame.Size = UDim2.new(1, -130, 1, -48)
+UI.contentFrame.Position = UDim2.fromOffset(130, 48)
+UI.contentFrame.BackgroundTransparency = 1
+UI.contentFrame.ClipsDescendants = true
+UI.contentFrame.Parent = UI.mainFrame
 
 
 --==================================================
@@ -1051,7 +1532,7 @@ local function createTab(tabName, order)
 	tabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 	tabButton.TextSize = 14
 	tabButton.Font = Enum.Font.GothamBold
-	tabButton.Parent = sidebar
+	tabButton.Parent = UI.sidebar
 
 	local tabCorner = Instance.new("UICorner")
 	tabCorner.CornerRadius = UDim.new(0, 8)
@@ -1069,7 +1550,7 @@ local function createTab(tabName, order)
 	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	page.CanvasSize = UDim2.fromOffset(0, 0)
 	page.Visible = false
-	page.Parent = contentFrame
+	page.Parent = UI.contentFrame
 
 	-- Content ภายในหน้า Scroll
 	local pageContent = Instance.new("Frame")
@@ -1094,23 +1575,29 @@ local function createTab(tabName, order)
 	pages[tabName] = page
 	tabButtons[tabName] = tabButton
 
-	return page, tabButton, pageContent
+	return tabButton, pageContent
 end
 
-local characterPage, characterTab, characterContent =
+local characterTab, characterContent =
 	createTab("Character", 1)
 
-local worldPage, worldTab, worldContent =
+local worldTab, worldContent =
 	createTab("Teleport", 2)
 
-local positionPage, positionTab, positionContent =
+local positionTab, positionContent =
 	createTab("Position", 3)
 
-local damagePage, damageTab, damageContent =
+local damageTab, damageContent =
 	createTab("Auto Damage", 4)
 
-local autoClickPage, autoClickTab, autoClickContent =
+local autoClickTab, autoClickContent =
 	createTab("Auto Click", 5)
+
+local crystalsTab, crystalsContent =
+	createTab("Crystals", 6)
+
+local findCrystalsTab, findCrystalsContent =
+	createTab("Find Crystals", 7)
 
 local function showTab(tabName)
 	for name, page in pairs(pages) do
@@ -1221,7 +1708,7 @@ local function createSliderGroup(
 	knobCorner.CornerRadius = UDim.new(1, 0)
 	knobCorner.Parent = knob
 
-	return group, label, slider, fill, knob
+	return label, slider, fill, knob
 end
 
 
@@ -1229,25 +1716,24 @@ end
 -- [17] CHARACTER TAB GUI
 --==================================================
 
-local characterTitle = Instance.new("TextLabel")
-characterTitle.Size = UDim2.new(1, 0, 0, 35)
-characterTitle.BackgroundTransparency = 1
-characterTitle.Text = "Character"
-characterTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-characterTitle.TextSize = 20
-characterTitle.Font = Enum.Font.GothamBold
-characterTitle.TextXAlignment = Enum.TextXAlignment.Left
-characterTitle.LayoutOrder = 1
-characterTitle.Parent = characterContent
+UI.characterTitle = Instance.new("TextLabel")
+UI.characterTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.characterTitle.BackgroundTransparency = 1
+UI.characterTitle.Text = "Character"
+UI.characterTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.characterTitle.TextSize = 20
+UI.characterTitle.Font = Enum.Font.GothamBold
+UI.characterTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.characterTitle.LayoutOrder = 1
+UI.characterTitle.Parent = characterContent
 
-local walkSpeedButton = createPageButton(
+UI.walkSpeedButton = createPageButton(
 	characterContent,
 	"Walk Speed: OFF",
 	2
 )
 
-local walkSpeedGroup,
-	walkSpeedLabel,
+local walkSpeedLabel,
 	walkSlider,
 	walkFill,
 	walkKnob = createSliderGroup(
@@ -1256,19 +1742,19 @@ local walkSpeedGroup,
 		3
 	)
 
-local lockWalkSpeedButton = createPageButton(
+UI.lockWalkSpeedButton = createPageButton(
 	characterContent,
 	"Lock Walk Speed: ON",
 	4
 )
 
-local infiniteJumpButton = createPageButton(
+UI.infiniteJumpButton = createPageButton(
 	characterContent,
 	"Infinite Jump: OFF",
 	5
 )
 
-local instantPromptButton = createPageButton(
+UI.instantPromptButton = createPageButton(
 	characterContent,
 	"Instant Prompt: OFF",
 	6
@@ -1279,15 +1765,14 @@ Noclip.Button = createPageButton(
 	"Noclip: OFF",
 	7
 )
-local flyButton = createPageButton(
+UI.flyButton = createPageButton(
 	characterContent,
 	"Fly: OFF",
 	8
 )
 
-local flySpeedGroup,
-	flySpeedLabel,
-	flySlider,
+local flySpeedLabel,
+	flySpeedSlider,
 	flyFill,
 	flyKnob = createSliderGroup(
 		characterContent,
@@ -1295,18 +1780,18 @@ local flySpeedGroup,
 		9
 	)
 
-local flyInfoLabel = Instance.new("TextLabel")
-flyInfoLabel.Size = UDim2.new(1, 0, 0, 65)
-flyInfoLabel.BackgroundTransparency = 1
-flyInfoLabel.Text =
+UI.flyInfoLabel = Instance.new("TextLabel")
+UI.flyInfoLabel.Size = UDim2.new(1, 0, 0, 65)
+UI.flyInfoLabel.BackgroundTransparency = 1
+UI.flyInfoLabel.Text =
 	"Fly Controls\nW A S D = เคลื่อนที่\nSpace = ขึ้น | Ctrl = ลง"
-flyInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
-flyInfoLabel.TextSize = 13
-flyInfoLabel.Font = Enum.Font.Gotham
-flyInfoLabel.TextWrapped = true
-flyInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-flyInfoLabel.LayoutOrder = 10
-flyInfoLabel.Parent = characterContent
+UI.flyInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
+UI.flyInfoLabel.TextSize = 13
+UI.flyInfoLabel.Font = Enum.Font.Gotham
+UI.flyInfoLabel.TextWrapped = true
+UI.flyInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.flyInfoLabel.LayoutOrder = 10
+UI.flyInfoLabel.Parent = characterContent
 
 
 --==================================================
@@ -1319,19 +1804,19 @@ local function updateCharacterInterface()
 	end
 
 	setButtonState(
-		walkSpeedButton,
+		UI.walkSpeedButton,
 		"Walk Speed",
 		Config.WalkSpeedEnabled
 	)
 
 	setButtonState(
-		lockWalkSpeedButton,
+		UI.lockWalkSpeedButton,
 		"Lock Walk Speed",
 		Config.LockWalkSpeed
 	)
 
 	setButtonState(
-		infiniteJumpButton,
+		UI.infiniteJumpButton,
 		"Infinite Jump",
 		Config.InfiniteJump
 	)
@@ -1342,12 +1827,12 @@ local function updateCharacterInterface()
 	)
 
 	setButtonState(
-		instantPromptButton,
+		UI.instantPromptButton,
 		"Instant Prompt",
 		Config.InstantPrompt
 	)
 	setButtonState(
-		flyButton,
+		UI.flyButton,
 		"Fly",
 		Config.FlyEnabled
 	)
@@ -1433,14 +1918,14 @@ local function setWalkSpeedFromPosition(position)
 end
 
 local function setFlySpeedFromPosition(position)
-	local width = flySlider.AbsoluteSize.X
+	local width = flySpeedSlider.AbsoluteSize.X
 
 	if width <= 0 then
 		return
 	end
 
 	local percent = math.clamp(
-		(position.X - flySlider.AbsolutePosition.X) / width,
+		(position.X - flySpeedSlider.AbsolutePosition.X) / width,
 		0,
 		1
 	)
@@ -1463,14 +1948,14 @@ end
 -- [20] SLIDER INPUT
 --==================================================
 
-local draggingWalkSlider = false
-local draggingFlySlider = false
+UI.State.draggingWalkSlider = false
+UI.State.draggingFlySlider = false
 
 local function beginWalkSlider(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingWalkSlider = true
+		UI.State.draggingWalkSlider = true
 		setWalkSpeedFromPosition(input.Position)
 	end
 end
@@ -1479,7 +1964,7 @@ local function beginFlySlider(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingFlySlider = true
+		UI.State.draggingFlySlider = true
 		setFlySpeedFromPosition(input.Position)
 	end
 end
@@ -1487,7 +1972,7 @@ end
 addConnection(walkSlider.InputBegan:Connect(beginWalkSlider))
 addConnection(walkKnob.InputBegan:Connect(beginWalkSlider))
 
-addConnection(flySlider.InputBegan:Connect(beginFlySlider))
+addConnection(flySpeedSlider.InputBegan:Connect(beginFlySlider))
 addConnection(flyKnob.InputBegan:Connect(beginFlySlider))
 
 addConnection(UserInputService.InputChanged:Connect(function(input)
@@ -1497,11 +1982,11 @@ addConnection(UserInputService.InputChanged:Connect(function(input)
 		return
 	end
 
-	if draggingWalkSlider then
+	if UI.State.draggingWalkSlider then
 		setWalkSpeedFromPosition(input.Position)
 	end
 
-	if draggingFlySlider then
+	if UI.State.draggingFlySlider then
 		setFlySpeedFromPosition(input.Position)
 	end
 end))
@@ -1510,8 +1995,8 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingWalkSlider = false
-		draggingFlySlider = false
+		UI.State.draggingWalkSlider = false
+		UI.State.draggingFlySlider = false
 	end
 end))
 
@@ -1520,7 +2005,7 @@ end))
 -- [21] CHARACTER BUTTON EVENTS
 --==================================================
 
-addConnection(walkSpeedButton.MouseButton1Click:Connect(function()
+addConnection(UI.walkSpeedButton.MouseButton1Click:Connect(function()
 	Config.WalkSpeedEnabled =
 		not Config.WalkSpeedEnabled
 
@@ -1528,7 +2013,7 @@ addConnection(walkSpeedButton.MouseButton1Click:Connect(function()
 	updateCharacterInterface()
 end))
 
-addConnection(lockWalkSpeedButton.MouseButton1Click:Connect(function()
+addConnection(UI.lockWalkSpeedButton.MouseButton1Click:Connect(function()
 	Config.LockWalkSpeed =
 		not Config.LockWalkSpeed
 
@@ -1536,19 +2021,19 @@ addConnection(lockWalkSpeedButton.MouseButton1Click:Connect(function()
 	updateCharacterInterface()
 end))
 
-addConnection(infiniteJumpButton.MouseButton1Click:Connect(function()
+addConnection(UI.infiniteJumpButton.MouseButton1Click:Connect(function()
 	Config.InfiniteJump =
 		not Config.InfiniteJump
 
 	updateCharacterInterface()
 end))
 
-addConnection(flyButton.MouseButton1Click:Connect(function()
+addConnection(UI.flyButton.MouseButton1Click:Connect(function()
 	setFlyEnabled(not Config.FlyEnabled)
 	updateCharacterInterface()
 end))
 
-addConnection(instantPromptButton.MouseButton1Click:Connect(function()
+addConnection(UI.instantPromptButton.MouseButton1Click:Connect(function()
 	setInstantPrompt(not Config.InstantPrompt)
 	updateCharacterInterface()
 end))
@@ -1562,72 +2047,72 @@ end))
 -- [22] WORLD TAB GUI
 --==================================================
 
-local worldTitle = Instance.new("TextLabel")
-worldTitle.Size = UDim2.new(1, 0, 0, 35)
-worldTitle.BackgroundTransparency = 1
-worldTitle.Text = "Teleport to Player"
-worldTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-worldTitle.TextSize = 20
-worldTitle.Font = Enum.Font.GothamBold
-worldTitle.TextXAlignment = Enum.TextXAlignment.Left
-worldTitle.LayoutOrder = 1
-worldTitle.Parent = worldContent
+UI.worldTitle = Instance.new("TextLabel")
+UI.worldTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.worldTitle.BackgroundTransparency = 1
+UI.worldTitle.Text = "Teleport to Player"
+UI.worldTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.worldTitle.TextSize = 20
+UI.worldTitle.Font = Enum.Font.GothamBold
+UI.worldTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.worldTitle.LayoutOrder = 1
+UI.worldTitle.Parent = worldContent
 
-local playerListFrame = Instance.new("ScrollingFrame")
-playerListFrame.Name = "PlayerList"
-playerListFrame.Size = UDim2.new(1, 0, 0, 230)
-playerListFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 43)
-playerListFrame.BorderSizePixel = 0
-playerListFrame.ScrollBarThickness = 5
-playerListFrame.ScrollBarImageColor3 =
+UI.playerListFrame = Instance.new("ScrollingFrame")
+UI.playerListFrame.Name = "PlayerList"
+UI.playerListFrame.Size = UDim2.new(1, 0, 0, 230)
+UI.playerListFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 43)
+UI.playerListFrame.BorderSizePixel = 0
+UI.playerListFrame.ScrollBarThickness = 5
+UI.playerListFrame.ScrollBarImageColor3 =
 	Color3.fromRGB(110, 110, 125)
-playerListFrame.AutomaticCanvasSize =
+UI.playerListFrame.AutomaticCanvasSize =
 	Enum.AutomaticSize.Y
-playerListFrame.CanvasSize = UDim2.fromOffset(0, 0)
-playerListFrame.ScrollingDirection =
+UI.playerListFrame.CanvasSize = UDim2.fromOffset(0, 0)
+UI.playerListFrame.ScrollingDirection =
 	Enum.ScrollingDirection.Y
-playerListFrame.LayoutOrder = 2
-playerListFrame.Parent = worldContent
+UI.playerListFrame.LayoutOrder = 2
+UI.playerListFrame.Parent = worldContent
 
-local playerListCorner = Instance.new("UICorner")
-playerListCorner.CornerRadius = UDim.new(0, 8)
-playerListCorner.Parent = playerListFrame
+UI.playerListCorner = Instance.new("UICorner")
+UI.playerListCorner.CornerRadius = UDim.new(0, 8)
+UI.playerListCorner.Parent = UI.playerListFrame
 
-local playerListLayout = Instance.new("UIListLayout")
-playerListLayout.Padding = UDim.new(0, 6)
-playerListLayout.SortOrder = Enum.SortOrder.Name
-playerListLayout.Parent = playerListFrame
+UI.playerListLayout = Instance.new("UIListLayout")
+UI.playerListLayout.Padding = UDim.new(0, 6)
+UI.playerListLayout.SortOrder = Enum.SortOrder.Name
+UI.playerListLayout.Parent = UI.playerListFrame
 
-local playerListPadding = Instance.new("UIPadding")
-playerListPadding.PaddingTop = UDim.new(0, 8)
-playerListPadding.PaddingBottom = UDim.new(0, 8)
-playerListPadding.PaddingLeft = UDim.new(0, 8)
-playerListPadding.PaddingRight = UDim.new(0, 8)
-playerListPadding.Parent = playerListFrame
+UI.playerListPadding = Instance.new("UIPadding")
+UI.playerListPadding.PaddingTop = UDim.new(0, 8)
+UI.playerListPadding.PaddingBottom = UDim.new(0, 8)
+UI.playerListPadding.PaddingLeft = UDim.new(0, 8)
+UI.playerListPadding.PaddingRight = UDim.new(0, 8)
+UI.playerListPadding.Parent = UI.playerListFrame
 
-local teleportButton = createPageButton(
+UI.teleportButton = createPageButton(
 	worldContent,
 	"Teleport",
 	3
 )
 
-local refreshButton = createPageButton(
+UI.refreshButton = createPageButton(
 	worldContent,
 	"Refresh Player List",
 	4
 )
 
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, 0, 0, 45)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "ยังไม่ได้เลือกผู้เล่น"
-statusLabel.TextColor3 = Color3.fromRGB(175, 175, 185)
-statusLabel.TextSize = 13
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextWrapped = true
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.LayoutOrder = 5
-statusLabel.Parent = worldContent
+UI.statusLabel = Instance.new("TextLabel")
+UI.statusLabel.Size = UDim2.new(1, 0, 0, 45)
+UI.statusLabel.BackgroundTransparency = 1
+UI.statusLabel.Text = "ยังไม่ได้เลือกผู้เล่น"
+UI.statusLabel.TextColor3 = Color3.fromRGB(175, 175, 185)
+UI.statusLabel.TextSize = 13
+UI.statusLabel.Font = Enum.Font.Gotham
+UI.statusLabel.TextWrapped = true
+UI.statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.statusLabel.LayoutOrder = 5
+UI.statusLabel.Parent = worldContent
 
 
 --==================================================
@@ -1649,7 +2134,7 @@ local function updatePlayerButtonStyles()
 end
 
 local function refreshPlayerList()
-	for _, child in ipairs(playerListFrame:GetChildren()) do
+	for _, child in ipairs(UI.playerListFrame:GetChildren()) do
 		if child:IsA("TextButton") then
 			child:Destroy()
 		end
@@ -1688,7 +2173,7 @@ local function refreshPlayerList()
 			Color3.fromRGB(255, 255, 255)
 		button.TextSize = 14
 		button.Font = Enum.Font.GothamMedium
-		button.Parent = playerListFrame
+		button.Parent = UI.playerListFrame
 
 		local corner = Instance.new("UICorner")
 		corner.CornerRadius = UDim.new(0, 7)
@@ -1699,14 +2184,14 @@ local function refreshPlayerList()
 		button.MouseButton1Click:Connect(function()
 			selectedPlayerName = targetPlayer.Name
 
-			statusLabel.Text =
+			UI.statusLabel.Text =
 				"เลือก: "
 				.. targetPlayer.DisplayName
 				.. " (@"
 				.. targetPlayer.Name
 				.. ")"
 
-			statusLabel.TextColor3 =
+			UI.statusLabel.TextColor3 =
 				Color3.fromRGB(175, 175, 185)
 
 			updatePlayerButtonStyles()
@@ -1715,7 +2200,7 @@ local function refreshPlayerList()
 
 	if #availablePlayers == 0 then
 		selectedPlayerName = nil
-		statusLabel.Text =
+		UI.statusLabel.Text =
 			"ไม่พบผู้เล่นคนอื่นในเซิร์ฟเวอร์"
 	end
 end
@@ -1725,10 +2210,10 @@ end
 -- [24] WORLD BUTTON EVENTS
 --==================================================
 
-addConnection(teleportButton.MouseButton1Click:Connect(function()
+addConnection(UI.teleportButton.MouseButton1Click:Connect(function()
 	if not selectedPlayerName then
-		statusLabel.Text = "กรุณาเลือกผู้เล่นก่อน"
-		statusLabel.TextColor3 =
+		UI.statusLabel.Text = "กรุณาเลือกผู้เล่นก่อน"
+		UI.statusLabel.TextColor3 =
 			Color3.fromRGB(235, 100, 100)
 		return
 	end
@@ -1739,22 +2224,22 @@ addConnection(teleportButton.MouseButton1Click:Connect(function()
 	local success, message =
 		teleportToPlayer(targetPlayer)
 
-	statusLabel.Text = message
+	UI.statusLabel.Text = message
 
 	if success then
-		statusLabel.TextColor3 =
+		UI.statusLabel.TextColor3 =
 			Color3.fromRGB(90, 220, 130)
 	else
-		statusLabel.TextColor3 =
+		UI.statusLabel.TextColor3 =
 			Color3.fromRGB(235, 100, 100)
 	end
 end))
 
-addConnection(refreshButton.MouseButton1Click:Connect(function()
+addConnection(UI.refreshButton.MouseButton1Click:Connect(function()
 	selectedPlayerName = nil
 
-	statusLabel.Text = "กำลังรีเฟรชรายชื่อ..."
-	statusLabel.TextColor3 =
+	UI.statusLabel.Text = "กำลังรีเฟรชรายชื่อ..."
+	UI.statusLabel.TextColor3 =
 		Color3.fromRGB(175, 175, 185)
 
 	refreshPlayerList()
@@ -1776,89 +2261,89 @@ end))
 -- [24.1] POSITION TAB GUI
 --==================================================
 
-local positionTitle = Instance.new("TextLabel")
-positionTitle.Size = UDim2.new(1, 0, 0, 35)
-positionTitle.BackgroundTransparency = 1
-positionTitle.Text = "Saved Positions"
-positionTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-positionTitle.TextSize = 20
-positionTitle.Font = Enum.Font.GothamBold
-positionTitle.TextXAlignment = Enum.TextXAlignment.Left
-positionTitle.LayoutOrder = 1
-positionTitle.Parent = positionContent
+UI.positionTitle = Instance.new("TextLabel")
+UI.positionTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.positionTitle.BackgroundTransparency = 1
+UI.positionTitle.Text = "Saved Positions"
+UI.positionTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.positionTitle.TextSize = 20
+UI.positionTitle.Font = Enum.Font.GothamBold
+UI.positionTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.positionTitle.LayoutOrder = 1
+UI.positionTitle.Parent = positionContent
 
 -- กลุ่มเพิ่มจุดใหม่
-local addPositionGroup = Instance.new("Frame")
-addPositionGroup.Size = UDim2.new(1, 0, 0, 96)
-addPositionGroup.BackgroundColor3 = Color3.fromRGB(35, 35, 43)
-addPositionGroup.BorderSizePixel = 0
-addPositionGroup.LayoutOrder = 2
-addPositionGroup.Parent = positionContent
+UI.addPositionGroup = Instance.new("Frame")
+UI.addPositionGroup.Size = UDim2.new(1, 0, 0, 96)
+UI.addPositionGroup.BackgroundColor3 = Color3.fromRGB(35, 35, 43)
+UI.addPositionGroup.BorderSizePixel = 0
+UI.addPositionGroup.LayoutOrder = 2
+UI.addPositionGroup.Parent = positionContent
 
-local addPositionCorner = Instance.new("UICorner")
-addPositionCorner.CornerRadius = UDim.new(0, 8)
-addPositionCorner.Parent = addPositionGroup
+UI.addPositionCorner = Instance.new("UICorner")
+UI.addPositionCorner.CornerRadius = UDim.new(0, 8)
+UI.addPositionCorner.Parent = UI.addPositionGroup
 
-local positionNameInput = Instance.new("TextBox")
-positionNameInput.Name = "PositionNameInput"
-positionNameInput.Size = UDim2.new(1, -20, 0, 38)
-positionNameInput.Position = UDim2.fromOffset(10, 9)
-positionNameInput.BackgroundColor3 = Color3.fromRGB(52, 52, 63)
-positionNameInput.BorderSizePixel = 0
-positionNameInput.Text = ""
-positionNameInput.PlaceholderText = "ชื่อจุด เช่น บ้าน, ร้านค้า, จุดเกิด"
-positionNameInput.PlaceholderColor3 = Color3.fromRGB(145, 145, 155)
-positionNameInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-positionNameInput.TextSize = 14
-positionNameInput.Font = Enum.Font.Gotham
-positionNameInput.ClearTextOnFocus = false
-positionNameInput.Parent = addPositionGroup
+UI.positionNameInput = Instance.new("TextBox")
+UI.positionNameInput.Name = "PositionNameInput"
+UI.positionNameInput.Size = UDim2.new(1, -20, 0, 38)
+UI.positionNameInput.Position = UDim2.fromOffset(10, 9)
+UI.positionNameInput.BackgroundColor3 = Color3.fromRGB(52, 52, 63)
+UI.positionNameInput.BorderSizePixel = 0
+UI.positionNameInput.Text = ""
+UI.positionNameInput.PlaceholderText = "ชื่อจุด เช่น บ้าน, ร้านค้า, จุดเกิด"
+UI.positionNameInput.PlaceholderColor3 = Color3.fromRGB(145, 145, 155)
+UI.positionNameInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.positionNameInput.TextSize = 14
+UI.positionNameInput.Font = Enum.Font.Gotham
+UI.positionNameInput.ClearTextOnFocus = false
+UI.positionNameInput.Parent = UI.addPositionGroup
 
-local positionNameCorner = Instance.new("UICorner")
-positionNameCorner.CornerRadius = UDim.new(0, 7)
-positionNameCorner.Parent = positionNameInput
+UI.positionNameCorner = Instance.new("UICorner")
+UI.positionNameCorner.CornerRadius = UDim.new(0, 7)
+UI.positionNameCorner.Parent = UI.positionNameInput
 
-local addPositionButton = Instance.new("TextButton")
-addPositionButton.Name = "AddPositionButton"
-addPositionButton.Size = UDim2.new(1, -20, 0, 34)
-addPositionButton.Position = UDim2.fromOffset(10, 54)
-addPositionButton.BackgroundColor3 = Color3.fromRGB(40, 165, 90)
-addPositionButton.BorderSizePixel = 0
-addPositionButton.Text = "Add Current Position"
-addPositionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-addPositionButton.TextSize = 14
-addPositionButton.Font = Enum.Font.GothamBold
-addPositionButton.Parent = addPositionGroup
+UI.addPositionButton = Instance.new("TextButton")
+UI.addPositionButton.Name = "AddPositionButton"
+UI.addPositionButton.Size = UDim2.new(1, -20, 0, 34)
+UI.addPositionButton.Position = UDim2.fromOffset(10, 54)
+UI.addPositionButton.BackgroundColor3 = Color3.fromRGB(40, 165, 90)
+UI.addPositionButton.BorderSizePixel = 0
+UI.addPositionButton.Text = "Add Current Position"
+UI.addPositionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.addPositionButton.TextSize = 14
+UI.addPositionButton.Font = Enum.Font.GothamBold
+UI.addPositionButton.Parent = UI.addPositionGroup
 
-local addPositionButtonCorner = Instance.new("UICorner")
-addPositionButtonCorner.CornerRadius = UDim.new(0, 7)
-addPositionButtonCorner.Parent = addPositionButton
+UI.addPositionButtonCorner = Instance.new("UICorner")
+UI.addPositionButtonCorner.CornerRadius = UDim.new(0, 7)
+UI.addPositionButtonCorner.Parent = UI.addPositionButton
 
-local positionStatusLabel = Instance.new("TextLabel")
-positionStatusLabel.Size = UDim2.new(1, 0, 0, 35)
-positionStatusLabel.BackgroundTransparency = 1
-positionStatusLabel.Text = "ยังไม่มีจุดที่บันทึก"
-positionStatusLabel.TextColor3 = Color3.fromRGB(175, 175, 185)
-positionStatusLabel.TextSize = 13
-positionStatusLabel.Font = Enum.Font.Gotham
-positionStatusLabel.TextWrapped = true
-positionStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-positionStatusLabel.LayoutOrder = 3
-positionStatusLabel.Parent = positionContent
+UI.positionStatusLabel = Instance.new("TextLabel")
+UI.positionStatusLabel.Size = UDim2.new(1, 0, 0, 35)
+UI.positionStatusLabel.BackgroundTransparency = 1
+UI.positionStatusLabel.Text = "ยังไม่มีจุดที่บันทึก"
+UI.positionStatusLabel.TextColor3 = Color3.fromRGB(175, 175, 185)
+UI.positionStatusLabel.TextSize = 13
+UI.positionStatusLabel.Font = Enum.Font.Gotham
+UI.positionStatusLabel.TextWrapped = true
+UI.positionStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.positionStatusLabel.LayoutOrder = 3
+UI.positionStatusLabel.Parent = positionContent
 
 -- Container แสดงรายการจุด
-local positionList = Instance.new("Frame")
-positionList.Name = "PositionList"
-positionList.Size = UDim2.new(1, 0, 0, 0)
-positionList.AutomaticSize = Enum.AutomaticSize.Y
-positionList.BackgroundTransparency = 1
-positionList.LayoutOrder = 4
-positionList.Parent = positionContent
+UI.positionList = Instance.new("Frame")
+UI.positionList.Name = "PositionList"
+UI.positionList.Size = UDim2.new(1, 0, 0, 0)
+UI.positionList.AutomaticSize = Enum.AutomaticSize.Y
+UI.positionList.BackgroundTransparency = 1
+UI.positionList.LayoutOrder = 4
+UI.positionList.Parent = positionContent
 
-local positionListLayout = Instance.new("UIListLayout")
-positionListLayout.Padding = UDim.new(0, 8)
-positionListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-positionListLayout.Parent = positionList
+UI.positionListLayout = Instance.new("UIListLayout")
+UI.positionListLayout.Padding = UDim.new(0, 8)
+UI.positionListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UI.positionListLayout.Parent = UI.positionList
 
 --==================================================
 -- [24.2] POSITION DATA AND LIST
@@ -1884,14 +2369,14 @@ local function updatePositionStatus()
 	local count = #savedPositions
 
 	if count == 0 then
-		positionStatusLabel.Text = "ยังไม่มีจุดที่บันทึก"
-		positionStatusLabel.TextColor3 =
+		UI.positionStatusLabel.Text = "ยังไม่มีจุดที่บันทึก"
+		UI.positionStatusLabel.TextColor3 =
 			Color3.fromRGB(175, 175, 185)
 	else
-		positionStatusLabel.Text =
+		UI.positionStatusLabel.Text =
 			"บันทึกทั้งหมด " .. tostring(count) .. " จุด"
 
-		positionStatusLabel.TextColor3 =
+		UI.positionStatusLabel.TextColor3 =
 			Color3.fromRGB(175, 175, 185)
 	end
 end
@@ -1915,7 +2400,7 @@ local function createPositionRow(data, layoutOrder)
 	row.BackgroundColor3 = Color3.fromRGB(35, 35, 43)
 	row.BorderSizePixel = 0
 	row.LayoutOrder = layoutOrder
-	row.Parent = positionList
+	row.Parent = UI.positionList
 
 	local rowCorner = Instance.new("UICorner")
 	rowCorner.CornerRadius = UDim.new(0, 8)
@@ -1997,10 +2482,10 @@ local function createPositionRow(data, layoutOrder)
 		savedData.Name = newName
 		nameInput.Text = newName
 
-		positionStatusLabel.Text =
+		UI.positionStatusLabel.Text =
 			"แก้ชื่อเป็น \"" .. newName .. "\" แล้ว"
 
-		positionStatusLabel.TextColor3 =
+		UI.positionStatusLabel.TextColor3 =
 			Color3.fromRGB(90, 220, 130)
 	end)
 
@@ -2008,8 +2493,8 @@ local function createPositionRow(data, layoutOrder)
 		local savedData = findSavedPositionById(data.Id)
 
 		if not savedData then
-			positionStatusLabel.Text = "ไม่พบจุดนี้"
-			positionStatusLabel.TextColor3 =
+			UI.positionStatusLabel.Text = "ไม่พบจุดนี้"
+			UI.positionStatusLabel.TextColor3 =
 				Color3.fromRGB(235, 100, 100)
 			return
 		end
@@ -2018,14 +2503,14 @@ local function createPositionRow(data, layoutOrder)
 			teleportToCFrame(savedData.CFrame)
 
 		if success then
-			positionStatusLabel.Text =
+			UI.positionStatusLabel.Text =
 				message .. ": " .. savedData.Name
 
-			positionStatusLabel.TextColor3 =
+			UI.positionStatusLabel.TextColor3 =
 				Color3.fromRGB(90, 220, 130)
 		else
-			positionStatusLabel.Text = message
-			positionStatusLabel.TextColor3 =
+			UI.positionStatusLabel.Text = message
+			UI.positionStatusLabel.TextColor3 =
 				Color3.fromRGB(235, 100, 100)
 		end
 	end)
@@ -2044,10 +2529,10 @@ local function createPositionRow(data, layoutOrder)
 
 		refreshPositionList()
 
-		positionStatusLabel.Text =
+		UI.positionStatusLabel.Text =
 			"ลบ \"" .. deletedName .. "\" แล้ว"
 
-		positionStatusLabel.TextColor3 =
+		UI.positionStatusLabel.TextColor3 =
 			Color3.fromRGB(235, 120, 120)
 	end)
 
@@ -2068,21 +2553,21 @@ end
 -- [24.3] ADD CURRENT POSITION
 --==================================================
 
-addConnection(addPositionButton.MouseButton1Click:Connect(function()
+addConnection(UI.addPositionButton.MouseButton1Click:Connect(function()
 	local rootPart = getRootPart()
 
 	if not rootPart then
-		positionStatusLabel.Text =
+		UI.positionStatusLabel.Text =
 			"ไม่พบ HumanoidRootPart ของตัวละคร"
 
-		positionStatusLabel.TextColor3 =
+		UI.positionStatusLabel.TextColor3 =
 			Color3.fromRGB(235, 100, 100)
 
 		return
 	end
 
 	local enteredName = string.gsub(
-		positionNameInput.Text,
+		UI.positionNameInput.Text,
 		"^%s*(.-)%s*$",
 		"%1"
 	)
@@ -2099,20 +2584,20 @@ addConnection(addPositionButton.MouseButton1Click:Connect(function()
 		CFrame = rootPart.CFrame,
 	})
 
-	positionNameInput.Text = ""
+	UI.positionNameInput.Text = ""
 
 	refreshPositionList()
 
-	positionStatusLabel.Text =
+	UI.positionStatusLabel.Text =
 		"เพิ่มจุด \"" .. enteredName .. "\" แล้ว"
 
-	positionStatusLabel.TextColor3 =
+	UI.positionStatusLabel.TextColor3 =
 		Color3.fromRGB(90, 220, 130)
 end))
 
-addConnection(positionNameInput.FocusLost:Connect(function(enterPressed)
+addConnection(UI.positionNameInput.FocusLost:Connect(function(enterPressed)
 	if enterPressed then
-		addPositionButton:Activate()
+		UI.addPositionButton:Activate()
 	end
 end))
 
@@ -2120,25 +2605,24 @@ end))
 -- [24.4] DAMAGE TAB GUI
 --==================================================
 
-local damageTitle = Instance.new("TextLabel")
-damageTitle.Size = UDim2.new(1, 0, 0, 35)
-damageTitle.BackgroundTransparency = 1
-damageTitle.Text = "Damage / Auto Attack"
-damageTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-damageTitle.TextSize = 20
-damageTitle.Font = Enum.Font.GothamBold
-damageTitle.TextXAlignment = Enum.TextXAlignment.Left
-damageTitle.LayoutOrder = 1
-damageTitle.Parent = damageContent
+UI.damageTitle = Instance.new("TextLabel")
+UI.damageTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.damageTitle.BackgroundTransparency = 1
+UI.damageTitle.Text = "Damage / Auto Attack"
+UI.damageTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.damageTitle.TextSize = 20
+UI.damageTitle.Font = Enum.Font.GothamBold
+UI.damageTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.damageTitle.LayoutOrder = 1
+UI.damageTitle.Parent = damageContent
 
-local autoAttackButton = createPageButton(
+UI.autoAttackButton = createPageButton(
 	damageContent,
 	"Auto Attack: OFF",
 	2
 )
 
-local attackRadiusGroup,
-	attackRadiusLabel,
+local attackRadiusLabel,
 	attackRadiusSlider,
 	attackRadiusFill,
 	attackRadiusKnob = createSliderGroup(
@@ -2147,8 +2631,7 @@ local attackRadiusGroup,
 		3
 	)
 
-local attackSpeedGroup,
-	attackSpeedLabel,
+local attackSpeedLabel,
 	attackSpeedSlider,
 	attackSpeedFill,
 	attackSpeedKnob = createSliderGroup(
@@ -2157,33 +2640,33 @@ local attackSpeedGroup,
 		4
 	)
 
-local onlyNPCButton = createPageButton(
+UI.onlyNPCButton = createPageButton(
 	damageContent,
 	"Only NPC: ON",
 	5
 )
 
-local lockRadiusButton = createPageButton(
+UI.lockRadiusButton = createPageButton(
 	damageContent,
 	"Lock Radius: ON",
 	5
 )
 
 
-local damageInfoLabel = Instance.new("TextLabel")
-damageInfoLabel.Size = UDim2.new(1, 0, 0, 90)
-damageInfoLabel.BackgroundTransparency = 1
-damageInfoLabel.Text =
+UI.damageInfoLabel = Instance.new("TextLabel")
+UI.damageInfoLabel.Size = UDim2.new(1, 0, 0, 90)
+UI.damageInfoLabel.BackgroundTransparency = 1
+UI.damageInfoLabel.Text =
 	"Auto Attack จะทำงานเฉพาะตอนถือ Tool\n"
 	.. "Radius = ระยะตรวจหาเป้าหมาย\n"
 	.. "Interval ต่ำ = โจมตีเร็วขึ้น"
-damageInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
-damageInfoLabel.TextSize = 13
-damageInfoLabel.Font = Enum.Font.Gotham
-damageInfoLabel.TextWrapped = true
-damageInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-damageInfoLabel.LayoutOrder = 6
-damageInfoLabel.Parent = damageContent
+UI.damageInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
+UI.damageInfoLabel.TextSize = 13
+UI.damageInfoLabel.Font = Enum.Font.Gotham
+UI.damageInfoLabel.TextWrapped = true
+UI.damageInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.damageInfoLabel.LayoutOrder = 6
+UI.damageInfoLabel.Parent = damageContent
 
 local function updateDamageInterface()
 	if scriptClosed then
@@ -2191,19 +2674,19 @@ local function updateDamageInterface()
 	end
 
 	setButtonState(
-		autoAttackButton,
+		UI.autoAttackButton,
 		"Auto Attack",
 		Config.AutoAttackEnabled
 	)
 
 	setButtonState(
-		onlyNPCButton,
+		UI.onlyNPCButton,
 		"Only NPC",
 		Config.OnlyNPC
 	)
-	
+
 	setButtonState(
-		lockRadiusButton,
+		UI.lockRadiusButton,
 		"Lock Radius",
 		Config.LockAttackRadius
 	)
@@ -2298,14 +2781,14 @@ local function setAttackSpeedFromPosition(position)
 	updateDamageInterface()
 end
 
-local draggingAttackRadiusSlider = false
-local draggingAttackSpeedSlider = false
+UI.State.draggingAttackRadiusSlider = false
+UI.State.draggingAttackSpeedSlider = false
 
 local function beginAttackRadiusSlider(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingAttackRadiusSlider = true
+		UI.State.draggingAttackRadiusSlider = true
 		setAttackRadiusFromPosition(input.Position)
 	end
 end
@@ -2314,7 +2797,7 @@ local function beginAttackSpeedSlider(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingAttackSpeedSlider = true
+		UI.State.draggingAttackSpeedSlider = true
 		setAttackSpeedFromPosition(input.Position)
 	end
 end
@@ -2350,11 +2833,11 @@ addConnection(UserInputService.InputChanged:Connect(function(input)
 		return
 	end
 
-	if draggingAttackRadiusSlider then
+	if UI.State.draggingAttackRadiusSlider then
 		setAttackRadiusFromPosition(input.Position)
 	end
 
-	if draggingAttackSpeedSlider then
+	if UI.State.draggingAttackSpeedSlider then
 		setAttackSpeedFromPosition(input.Position)
 	end
 end))
@@ -2363,12 +2846,12 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingAttackRadiusSlider = false
-		draggingAttackSpeedSlider = false
+		UI.State.draggingAttackRadiusSlider = false
+		UI.State.draggingAttackSpeedSlider = false
 	end
 end))
 
-addConnection(autoAttackButton.MouseButton1Click:Connect(function()
+addConnection(UI.autoAttackButton.MouseButton1Click:Connect(function()
 	setAutoAttackEnabled(
 		not Config.AutoAttackEnabled
 	)
@@ -2376,13 +2859,13 @@ addConnection(autoAttackButton.MouseButton1Click:Connect(function()
 	updateDamageInterface()
 end))
 
-addConnection(onlyNPCButton.MouseButton1Click:Connect(function()
+addConnection(UI.onlyNPCButton.MouseButton1Click:Connect(function()
 	Config.OnlyNPC = not Config.OnlyNPC
 
 	updateDamageInterface()
 end))
 
-addConnection(lockRadiusButton.MouseButton1Click:Connect(function()
+addConnection(UI.lockRadiusButton.MouseButton1Click:Connect(function()
 	setRadiusLockEnabled(
 		not Config.LockAttackRadius
 	)
@@ -2395,25 +2878,24 @@ end))
 -- [24.5] AUTO CLICK TAB GUI
 --==================================================
 
-local autoClickTitle = Instance.new("TextLabel")
-autoClickTitle.Size = UDim2.new(1, 0, 0, 35)
-autoClickTitle.BackgroundTransparency = 1
-autoClickTitle.Text = "Auto Click"
-autoClickTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-autoClickTitle.TextSize = 20
-autoClickTitle.Font = Enum.Font.GothamBold
-autoClickTitle.TextXAlignment = Enum.TextXAlignment.Left
-autoClickTitle.LayoutOrder = 1
-autoClickTitle.Parent = autoClickContent
+UI.autoClickTitle = Instance.new("TextLabel")
+UI.autoClickTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.autoClickTitle.BackgroundTransparency = 1
+UI.autoClickTitle.Text = "Auto Click"
+UI.autoClickTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.autoClickTitle.TextSize = 20
+UI.autoClickTitle.Font = Enum.Font.GothamBold
+UI.autoClickTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.autoClickTitle.LayoutOrder = 1
+UI.autoClickTitle.Parent = autoClickContent
 
-local autoClickButton = createPageButton(
+UI.autoClickButton = createPageButton(
 	autoClickContent,
 	"Auto Click: OFF",
 	2
 )
 
-local autoClickSpeedGroup,
-	autoClickSpeedLabel,
+local autoClickSpeedLabel,
 	autoClickSpeedSlider,
 	autoClickSpeedFill,
 	autoClickSpeedKnob = createSliderGroup(
@@ -2423,22 +2905,22 @@ local autoClickSpeedGroup,
 	3
 )
 
-local autoClickInfoLabel = Instance.new("TextLabel")
-autoClickInfoLabel.Size = UDim2.new(1, 0, 0, 90)
-autoClickInfoLabel.BackgroundTransparency = 1
-autoClickInfoLabel.Text =
+UI.autoClickInfoLabel = Instance.new("TextLabel")
+UI.autoClickInfoLabel.Size = UDim2.new(1, 0, 0, 90)
+UI.autoClickInfoLabel.BackgroundTransparency = 1
+UI.autoClickInfoLabel.Text =
 	"กด G เพื่อเปิดหรือปิด Auto Click\n"
 	.. "ทำงานเฉพาะตอนถือ Tool\n"
 	.. "0.01 = คลิกเร็วที่สุด"
-autoClickInfoLabel.TextColor3 =
+UI.autoClickInfoLabel.TextColor3 =
 	Color3.fromRGB(165, 165, 175)
-autoClickInfoLabel.TextSize = 13
-autoClickInfoLabel.Font = Enum.Font.Gotham
-autoClickInfoLabel.TextWrapped = true
-autoClickInfoLabel.TextXAlignment =
+UI.autoClickInfoLabel.TextSize = 13
+UI.autoClickInfoLabel.Font = Enum.Font.Gotham
+UI.autoClickInfoLabel.TextWrapped = true
+UI.autoClickInfoLabel.TextXAlignment =
 	Enum.TextXAlignment.Left
-autoClickInfoLabel.LayoutOrder = 4
-autoClickInfoLabel.Parent = autoClickContent
+UI.autoClickInfoLabel.LayoutOrder = 4
+UI.autoClickInfoLabel.Parent = autoClickContent
 
 local function updateAutoClickInterface()
 	if scriptClosed then
@@ -2446,7 +2928,7 @@ local function updateAutoClickInterface()
 	end
 
 	setButtonState(
-		autoClickButton,
+		UI.autoClickButton,
 		"Auto Click",
 		Config.AutoClickEnabled
 	)
@@ -2505,7 +2987,7 @@ local function setAutoClickSpeedFromPosition(position)
 	updateAutoClickInterface()
 end
 
-local draggingAutoClickSlider = false
+UI.State.draggingAutoClickSlider = false
 
 local function beginAutoClickSlider(input)
 	if input.UserInputType
@@ -2513,7 +2995,7 @@ local function beginAutoClickSlider(input)
 		or input.UserInputType
 			== Enum.UserInputType.Touch then
 
-		draggingAutoClickSlider = true
+		UI.State.draggingAutoClickSlider = true
 		setAutoClickSpeedFromPosition(input.Position)
 	end
 end
@@ -2539,7 +3021,7 @@ addConnection(UserInputService.InputChanged:Connect(function(input)
 		return
 	end
 
-	if draggingAutoClickSlider then
+	if UI.State.draggingAutoClickSlider then
 		setAutoClickSpeedFromPosition(
 			input.Position
 		)
@@ -2552,14 +3034,270 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
 		or input.UserInputType
 			== Enum.UserInputType.Touch then
 
-		draggingAutoClickSlider = false
+		UI.State.draggingAutoClickSlider = false
 	end
 end))
 
-addConnection(autoClickButton.MouseButton1Click:Connect(function()
+addConnection(UI.autoClickButton.MouseButton1Click:Connect(function()
 	toggleAutoClick()
 	updateAutoClickInterface()
 end))
+
+
+do
+	--==================================================
+	-- [24.6] AUTO E / CRYSTALS / FIND CRYSTALS GUI
+	--==================================================
+
+	local autoEButton = createPageButton(
+		autoClickContent,
+		"Auto E: OFF",
+		5
+	)
+
+	local autoEInfoLabel = Instance.new("TextLabel")
+	autoEInfoLabel.Size = UDim2.new(1, 0, 0, 58)
+	autoEInfoLabel.BackgroundTransparency = 1
+	autoEInfoLabel.Text =
+		"Auto E กด ProximityPrompt ปุ่ม E อัตโนมัติ\n"
+		.. "กด R เพื่อเปิด/ปิด | Interval: "
+		.. string.format("%.2f", Config.AutoEInterval)
+	autoEInfoLabel.TextColor3 =
+		Color3.fromRGB(165, 165, 175)
+	autoEInfoLabel.TextSize = 13
+	autoEInfoLabel.Font = Enum.Font.Gotham
+	autoEInfoLabel.TextWrapped = true
+	autoEInfoLabel.TextXAlignment =
+		Enum.TextXAlignment.Left
+	autoEInfoLabel.LayoutOrder = 6
+	autoEInfoLabel.Parent = autoClickContent
+
+	function Addons.updateAutoEInterface()
+		setButtonState(
+			autoEButton,
+			"Auto E",
+			Config.AutoEEnabled
+		)
+	end
+
+	addConnection(autoEButton.MouseButton1Click:Connect(function()
+		Addons.setAutoEEnabled(not Config.AutoEEnabled)
+		Addons.updateAutoEInterface()
+	end))
+
+	local crystalsTitle = Instance.new("TextLabel")
+	crystalsTitle.Size = UDim2.new(1, 0, 0, 35)
+	crystalsTitle.BackgroundTransparency = 1
+	crystalsTitle.Text = "Crystals"
+	crystalsTitle.TextColor3 =
+		Color3.fromRGB(255, 255, 255)
+	crystalsTitle.TextSize = 20
+	crystalsTitle.Font = Enum.Font.GothamBold
+	crystalsTitle.TextXAlignment =
+		Enum.TextXAlignment.Left
+	crystalsTitle.LayoutOrder = 1
+	crystalsTitle.Parent = crystalsContent
+
+	local removeLightButton = createPageButton(
+		crystalsContent,
+		"Remove Crystal Light: ON",
+		2
+	)
+
+	local removeLowPriceButton = createPageButton(
+		crystalsContent,
+		"Remove Low Price Crystals: OFF",
+		3
+	)
+
+	local crystalPriceInput = Instance.new("TextBox")
+	crystalPriceInput.Size = UDim2.new(1, 0, 0, 42)
+	crystalPriceInput.BackgroundColor3 =
+		Color3.fromRGB(52, 52, 63)
+	crystalPriceInput.BorderSizePixel = 0
+	crystalPriceInput.Text =
+		tostring(Config.MinimumCrystalPrice)
+	crystalPriceInput.PlaceholderText =
+		"ราคาขั้นต่ำ เช่น 10000000 หรือ 10M"
+	crystalPriceInput.TextColor3 =
+		Color3.fromRGB(255, 255, 255)
+	crystalPriceInput.PlaceholderColor3 =
+		Color3.fromRGB(145, 145, 155)
+	crystalPriceInput.TextSize = 14
+	crystalPriceInput.Font = Enum.Font.Gotham
+	crystalPriceInput.ClearTextOnFocus = false
+	crystalPriceInput.LayoutOrder = 4
+	crystalPriceInput.Parent = crystalsContent
+
+	Instance.new("UICorner", crystalPriceInput).CornerRadius =
+		UDim.new(0, 8)
+
+	local applyPriceButton = createPageButton(
+		crystalsContent,
+		"Apply Minimum Price",
+		5
+	)
+
+	local crystalStatus = Instance.new("TextLabel")
+	crystalStatus.Size = UDim2.new(1, 0, 0, 65)
+	crystalStatus.BackgroundTransparency = 1
+	crystalStatus.Text =
+		"Remove Light: ON | Low Price: OFF"
+	crystalStatus.TextColor3 =
+		Color3.fromRGB(175, 175, 185)
+	crystalStatus.TextSize = 13
+	crystalStatus.Font = Enum.Font.Gotham
+	crystalStatus.TextWrapped = true
+	crystalStatus.TextXAlignment =
+		Enum.TextXAlignment.Left
+	crystalStatus.LayoutOrder = 6
+	crystalStatus.Parent = crystalsContent
+
+	function Addons.updateCrystalsInterface()
+		setButtonState(
+			removeLightButton,
+			"Remove Crystal Light",
+			Config.RemoveCrystalLightEnabled
+		)
+
+		setButtonState(
+			removeLowPriceButton,
+			"Remove Low Price Crystals",
+			Config.RemoveLowPriceCrystalsEnabled
+		)
+	end
+
+	local function applyPriceInput()
+		local value = Addons.parseCrystalValue(crystalPriceInput.Text)
+
+		if not value then
+			crystalStatus.Text = "กรุณากรอกราคาที่ถูกต้อง"
+			crystalStatus.TextColor3 =
+				Color3.fromRGB(235, 100, 100)
+			return
+		end
+
+		Config.MinimumCrystalPrice =
+			math.max(0, math.floor(value))
+
+		crystalPriceInput.Text =
+			tostring(Config.MinimumCrystalPrice)
+
+		local checked, hidden, noValue =
+			Addons.applyLowPriceFilter()
+
+		crystalStatus.Text = string.format(
+			"ตรวจ %d | ซ่อน %d | ไม่พบค่า %d",
+			checked,
+			hidden,
+			noValue
+		)
+
+		crystalStatus.TextColor3 =
+			Color3.fromRGB(90, 220, 130)
+	end
+
+	addConnection(removeLightButton.MouseButton1Click:Connect(function()
+		Config.RemoveCrystalLightEnabled =
+			not Config.RemoveCrystalLightEnabled
+
+		if Config.RemoveCrystalLightEnabled then
+			local changed = Addons.applyCrystalLights()
+			crystalStatus.Text =
+				"ปิดแสง Crystal: "
+				.. tostring(changed)
+		else
+			Addons.restoreCrystalLights()
+			crystalStatus.Text = "คืนค่าแสง Crystal แล้ว"
+		end
+
+		Addons.updateCrystalsInterface()
+	end))
+
+	addConnection(removeLowPriceButton.MouseButton1Click:Connect(function()
+		Config.RemoveLowPriceCrystalsEnabled =
+			not Config.RemoveLowPriceCrystalsEnabled
+
+		if Config.RemoveLowPriceCrystalsEnabled then
+			applyPriceInput()
+		else
+			Addons.restoreAllCrystals()
+			crystalStatus.Text =
+				"คืนค่า Crystal ที่ซ่อนแล้ว"
+		end
+
+		Addons.updateCrystalsInterface()
+	end))
+
+	addConnection(applyPriceButton.MouseButton1Click:Connect(
+		applyPriceInput
+	))
+
+	addConnection(crystalPriceInput.FocusLost:Connect(function(enterPressed)
+		if enterPressed then
+			applyPriceInput()
+		end
+	end))
+
+	local findCrystalsTitle = Instance.new("TextLabel")
+	findCrystalsTitle.Size = UDim2.new(1, 0, 0, 35)
+	findCrystalsTitle.BackgroundTransparency = 1
+	findCrystalsTitle.Text = "Find Crystals"
+	findCrystalsTitle.TextColor3 =
+		Color3.fromRGB(255, 255, 255)
+	findCrystalsTitle.TextSize = 20
+	findCrystalsTitle.Font = Enum.Font.GothamBold
+	findCrystalsTitle.TextXAlignment =
+		Enum.TextXAlignment.Left
+	findCrystalsTitle.LayoutOrder = 1
+	findCrystalsTitle.Parent = findCrystalsContent
+
+	local boulderESPButton = createPageButton(
+		findCrystalsContent,
+		"Boulder ESP: ON",
+		2
+	)
+
+	local boulderESPStatus = Instance.new("TextLabel")
+	boulderESPStatus.Size = UDim2.new(1, 0, 0, 70)
+	boulderESPStatus.BackgroundTransparency = 1
+	boulderESPStatus.Text =
+		"Highlight หินใน MountainDecorations > Boulders"
+	boulderESPStatus.TextColor3 =
+		Color3.fromRGB(175, 175, 185)
+	boulderESPStatus.TextSize = 13
+	boulderESPStatus.Font = Enum.Font.Gotham
+	boulderESPStatus.TextWrapped = true
+	boulderESPStatus.TextXAlignment =
+		Enum.TextXAlignment.Left
+	boulderESPStatus.LayoutOrder = 3
+	boulderESPStatus.Parent = findCrystalsContent
+
+	function Addons.updateFindCrystalsInterface()
+		setButtonState(
+			boulderESPButton,
+			"Boulder ESP",
+			Config.BoulderESPEnabled
+		)
+	end
+
+	addConnection(boulderESPButton.MouseButton1Click:Connect(function()
+		Addons.setBoulderESPEnabled(not Config.BoulderESPEnabled)
+
+		if Config.BoulderESPEnabled then
+			boulderESPStatus.Text =
+				"เปิด Boulder ESP แล้ว: "
+				.. tostring(Addons.scanBoulderESP())
+				.. " Object"
+		else
+			boulderESPStatus.Text =
+				"ปิด Boulder ESP แล้ว"
+		end
+
+		Addons.updateFindCrystalsInterface()
+	end))
+
+end
 
 --==================================================
 -- [25] TAB EVENTS
@@ -2592,6 +3330,17 @@ addConnection(autoClickTab.MouseButton1Click:Connect(function()
 
 	updateAutoClickSlider()
 	updateAutoClickInterface()
+	Addons.updateAutoEInterface()
+end))
+
+addConnection(crystalsTab.MouseButton1Click:Connect(function()
+	showTab("Crystals")
+	Addons.updateCrystalsInterface()
+end))
+
+addConnection(findCrystalsTab.MouseButton1Click:Connect(function()
+	showTab("Find Crystals")
+	Addons.updateFindCrystalsInterface()
 end))
 
 
@@ -2599,48 +3348,48 @@ end))
 -- [26] MINIMIZE LOGO
 --==================================================
 
-local logoButton = Instance.new("ImageButton")
-logoButton.Name = "LogoButton"
-logoButton.Size = UDim2.fromOffset(62, 62)
-logoButton.AnchorPoint = Vector2.new(0.5, 0)
-logoButton.Position = UDim2.new(0.5, 0, 0, 100)
-logoButton.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
-logoButton.BorderSizePixel = 0
-logoButton.Image = LOGO_ASSET_ID
-logoButton.ScaleType = Enum.ScaleType.Fit
-logoButton.Visible = false
-logoButton.Active = true
-logoButton.ZIndex = 1000
-logoButton.Parent = screenGui
+UI.logoButton = Instance.new("ImageButton")
+UI.logoButton.Name = "LogoButton"
+UI.logoButton.Size = UDim2.fromOffset(62, 62)
+UI.logoButton.AnchorPoint = Vector2.new(0.5, 0)
+UI.logoButton.Position = UDim2.new(0.5, 0, 0, 100)
+UI.logoButton.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
+UI.logoButton.BorderSizePixel = 0
+UI.logoButton.Image = LOGO_ASSET_ID
+UI.logoButton.ScaleType = Enum.ScaleType.Fit
+UI.logoButton.Visible = false
+UI.logoButton.Active = true
+UI.logoButton.ZIndex = 1000
+UI.logoButton.Parent = UI.screenGui
 
-local logoCorner = Instance.new("UICorner")
-logoCorner.CornerRadius = UDim.new(1, 0)
-logoCorner.Parent = logoButton
+UI.logoCorner = Instance.new("UICorner")
+UI.logoCorner.CornerRadius = UDim.new(1, 0)
+UI.logoCorner.Parent = UI.logoButton
 
-local logoStroke = Instance.new("UIStroke")
-logoStroke.Color = Color3.fromRGB(90, 90, 105)
-logoStroke.Thickness = 2
-logoStroke.Parent = logoButton
+UI.logoStroke = Instance.new("UIStroke")
+UI.logoStroke.Color = Color3.fromRGB(90, 90, 105)
+UI.logoStroke.Thickness = 2
+UI.logoStroke.Parent = UI.logoButton
 
-local logoPadding = Instance.new("UIPadding")
-logoPadding.PaddingTop = UDim.new(0, 7)
-logoPadding.PaddingBottom = UDim.new(0, 7)
-logoPadding.PaddingLeft = UDim.new(0, 7)
-logoPadding.PaddingRight = UDim.new(0, 7)
-logoPadding.Parent = logoButton
+UI.logoPadding = Instance.new("UIPadding")
+UI.logoPadding.PaddingTop = UDim.new(0, 7)
+UI.logoPadding.PaddingBottom = UDim.new(0, 7)
+UI.logoPadding.PaddingLeft = UDim.new(0, 7)
+UI.logoPadding.PaddingRight = UDim.new(0, 7)
+UI.logoPadding.Parent = UI.logoButton
 
 local function minimizeMenu()
 	if scriptClosed then
 		return
 	end
 
-	mainFrame.Visible = false
+	UI.mainFrame.Visible = false
 
 	-- จัดโลโก้ไว้กึ่งกลางด้านบนทุกครั้งที่ย่อ
-	logoButton.AnchorPoint = Vector2.new(0.5, 0)
-	logoButton.Position = UDim2.new(0.5, 0, 0, 100)
+	UI.logoButton.AnchorPoint = Vector2.new(0.5, 0)
+	UI.logoButton.Position = UDim2.new(0.5, 0, 0, 100)
 
-	logoButton.Visible = true
+	UI.logoButton.Visible = true
 end
 
 local function restoreMenu()
@@ -2648,8 +3397,8 @@ local function restoreMenu()
 		return
 	end
 
-	mainFrame.Visible = true
-	logoButton.Visible = false
+	UI.mainFrame.Visible = true
+	UI.logoButton.Visible = false
 end
 
 
@@ -2657,22 +3406,22 @@ end
 -- [27] DRAG MAIN WINDOW
 --==================================================
 
-local draggingWindow = false
-local windowDragStart = nil
-local windowStartPosition = nil
+UI.State.draggingWindow = false
+UI.State.windowDragStart = nil
+UI.State.windowStartPosition = nil
 
-addConnection(titleBar.InputBegan:Connect(function(input)
+addConnection(UI.titleBar.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingWindow = true
-		windowDragStart = input.Position
-		windowStartPosition = mainFrame.Position
+		UI.State.draggingWindow = true
+		UI.State.windowDragStart = input.Position
+		UI.State.windowStartPosition = UI.mainFrame.Position
 	end
 end))
 
 addConnection(UserInputService.InputChanged:Connect(function(input)
-	if not draggingWindow then
+	if not UI.State.draggingWindow then
 		return
 	end
 
@@ -2682,13 +3431,13 @@ addConnection(UserInputService.InputChanged:Connect(function(input)
 		return
 	end
 
-	local delta = input.Position - windowDragStart
+	local delta = input.Position - UI.State.windowDragStart
 
-	mainFrame.Position = UDim2.new(
-		windowStartPosition.X.Scale,
-		windowStartPosition.X.Offset + delta.X,
-		windowStartPosition.Y.Scale,
-		windowStartPosition.Y.Offset + delta.Y
+	UI.mainFrame.Position = UDim2.new(
+		UI.State.windowStartPosition.X.Scale,
+		UI.State.windowStartPosition.X.Offset + delta.X,
+		UI.State.windowStartPosition.Y.Scale,
+		UI.State.windowStartPosition.Y.Offset + delta.Y
 	)
 end))
 
@@ -2696,7 +3445,7 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingWindow = false
+		UI.State.draggingWindow = false
 	end
 end))
 
@@ -2705,24 +3454,24 @@ end))
 -- [28] DRAG LOGO
 --==================================================
 
-local draggingLogo = false
-local logoDragStart = nil
-local logoStartPosition = nil
-local logoWasDragged = false
+UI.State.draggingLogo = false
+UI.State.logoDragStart = nil
+UI.State.logoStartPosition = nil
+UI.State.logoWasDragged = false
 
-addConnection(logoButton.InputBegan:Connect(function(input)
+addConnection(UI.logoButton.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingLogo = true
-		logoWasDragged = false
-		logoDragStart = input.Position
-		logoStartPosition = logoButton.Position
+		UI.State.draggingLogo = true
+		UI.State.logoWasDragged = false
+		UI.State.logoDragStart = input.Position
+		UI.State.logoStartPosition = UI.logoButton.Position
 	end
 end))
 
 addConnection(UserInputService.InputChanged:Connect(function(input)
-	if not draggingLogo then
+	if not UI.State.draggingLogo then
 		return
 	end
 
@@ -2732,17 +3481,17 @@ addConnection(UserInputService.InputChanged:Connect(function(input)
 		return
 	end
 
-	local delta = input.Position - logoDragStart
+	local delta = input.Position - UI.State.logoDragStart
 
 	if delta.Magnitude > 5 then
-		logoWasDragged = true
+		UI.State.logoWasDragged = true
 	end
 
-	logoButton.Position = UDim2.new(
-		logoStartPosition.X.Scale,
-		logoStartPosition.X.Offset + delta.X,
-		logoStartPosition.Y.Scale,
-		logoStartPosition.Y.Offset + delta.Y
+	UI.logoButton.Position = UDim2.new(
+		UI.State.logoStartPosition.X.Scale,
+		UI.State.logoStartPosition.X.Offset + delta.X,
+		UI.State.logoStartPosition.Y.Scale,
+		UI.State.logoStartPosition.Y.Offset + delta.Y
 	)
 end))
 
@@ -2750,7 +3499,7 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
-		draggingLogo = false
+		UI.State.draggingLogo = false
 	end
 end))
 
@@ -2771,21 +3520,30 @@ local function closeScript()
 	Config.InfiniteJump = false
 	Config.FlyEnabled = false
 	Config.InstantPrompt = false
-	
+
 	Config.NoclipEnabled = false
 	Noclip:Stop()
 
 	stopFly()
 	disconnectWalkSpeedLock()
-	
-	Config.AutoAttackEnabled = false
+
 	stopAutoAttack()
-	
+
 	Config.LockAttackRadius = false
 	stopRadiusLock()
-	
-	Config.AutoClickEnabled = false
+
 	stopAutoClick()
+
+	Addons.setAutoEEnabled(false)
+	table.clear(visibleEPrompts)
+
+	Config.RemoveCrystalLightEnabled = false
+	Config.RemoveLowPriceCrystalsEnabled = false
+	Addons.stopCrystalLoop()
+	Addons.restoreCrystalLights()
+	Addons.restoreAllCrystals()
+
+	Addons.setBoulderESPEnabled(false)
 
 	local humanoid = getHumanoid()
 
@@ -2814,8 +3572,8 @@ local function closeScript()
 
 	disconnectAllConnections()
 
-	if screenGui then
-		screenGui:Destroy()
+	if UI.screenGui then
+		UI.screenGui:Destroy()
 	end
 end
 
@@ -2824,17 +3582,17 @@ end
 -- [30] WINDOW EVENTS
 --==================================================
 
-addConnection(minimizeButton.MouseButton1Click:Connect(function()
+addConnection(UI.minimizeButton.MouseButton1Click:Connect(function()
 	minimizeMenu()
 end))
 
-addConnection(logoButton.MouseButton1Click:Connect(function()
-	if not logoWasDragged then
+addConnection(UI.logoButton.MouseButton1Click:Connect(function()
+	if not UI.State.logoWasDragged then
 		restoreMenu()
 	end
 end))
 
-addConnection(closeButton.MouseButton1Click:Connect(function()
+addConnection(UI.closeButton.MouseButton1Click:Connect(function()
 	closeScript()
 end))
 
@@ -2847,7 +3605,7 @@ addConnection(UserInputService.InputBegan:Connect(function(
 	end
 
 	if input.KeyCode == Config.ToggleKey then
-		if mainFrame.Visible then
+		if UI.mainFrame.Visible then
 			minimizeMenu()
 		else
 			restoreMenu()
@@ -2863,6 +3621,13 @@ addConnection(UserInputService.InputBegan:Connect(function(
 	if input.KeyCode == Config.AutoClickKey then
 		toggleAutoClick()
 		updateAutoClickInterface()
+		return
+	end
+
+	-- กด R เพื่อเปิด/ปิด Auto E
+	if input.KeyCode == Enum.KeyCode.R then
+		Addons.setAutoEEnabled(not Config.AutoEEnabled)
+		Addons.updateAutoEInterface()
 	end
 end))
 
@@ -2929,11 +3694,25 @@ task.defer(function()
 
 	refreshPlayerList()
 	refreshPositionList()
-	
+
 	updateAttackRadiusSlider()
 	updateAttackSpeedSlider()
 	updateDamageInterface()
-	
+
 	updateAutoClickSlider()
 	updateAutoClickInterface()
+	Addons.updateAutoEInterface()
+
+	Addons.updateCrystalsInterface()
+	Addons.updateFindCrystalsInterface()
+
+	if Config.RemoveCrystalLightEnabled then
+		Addons.applyCrystalLights()
+	end
+
+	if Config.BoulderESPEnabled then
+		Addons.setBoulderESPEnabled(true)
+	end
+
+	Addons.startCrystalLoop()
 end)
