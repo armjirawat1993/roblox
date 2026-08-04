@@ -1,3 +1,8 @@
+-- ObjectFinder.client.lua
+-- ใช้สำหรับทดสอบในเกม Roblox Studio ที่คุณเป็นเจ้าของเท่านั้น
+-- วางไฟล์นี้เป็น LocalScript ที่:
+-- StarterPlayer > StarterPlayerScripts > ObjectFinder.client.lua
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -482,9 +487,9 @@ local function findCrystalByLuck(origin, minimumLuck)
 		return nil, nil
 	end
 
-	local bestCrystal = nil
-	local bestLuck = -math.huge
-	local bestDistance = math.huge
+	local nearestCrystal = nil
+	local nearestLuck = nil
+	local nearestDistance = math.huge
 
 	for _, crystal in ipairs(crystalsFolder:GetChildren()) do
 		local luck = getCrystalLuck(crystal)
@@ -496,20 +501,15 @@ local function findCrystalByLuck(origin, minimumLuck)
 
 			local distance = (position - origin).Magnitude
 
-			if luck > bestLuck
-				or (
-					luck == bestLuck
-					and distance < bestDistance
-				) then
-
-				bestCrystal = crystal
-				bestLuck = luck
-				bestDistance = distance
+			if distance < nearestDistance then
+				nearestCrystal = crystal
+				nearestLuck = luck
+				nearestDistance = distance
 			end
 		end
 	end
 
-	return bestCrystal, bestLuck
+	return nearestCrystal, nearestLuck
 end
 
 -- Crystal price finder
@@ -657,9 +657,9 @@ local function findCrystalByPrice(origin, minimumPrice)
 		return nil, nil
 	end
 
-	local bestCrystal = nil
-	local bestPrice = math.huge
-	local bestDistance = math.huge
+	local nearestCrystal = nil
+	local nearestPrice = nil
+	local nearestDistance = math.huge
 
 	for _, crystal in ipairs(crystalsFolder:GetChildren()) do
 		local price = getCrystalPrice(crystal)
@@ -671,22 +671,15 @@ local function findCrystalByPrice(origin, minimumPrice)
 
 			local distance = (position - origin).Magnitude
 
-			-- เลือกราคาที่ต่ำที่สุดแต่ยังผ่านขั้นต่ำ
-			-- หากราคาเท่ากัน เลือกชิ้นที่ใกล้ที่สุด
-			if price < bestPrice
-				or (
-					price == bestPrice
-					and distance < bestDistance
-				) then
-
-				bestCrystal = crystal
-				bestPrice = price
-				bestDistance = distance
+			if distance < nearestDistance then
+				nearestCrystal = crystal
+				nearestPrice = price
+				nearestDistance = distance
 			end
 		end
 	end
 
-	return bestCrystal, bestPrice
+	return nearestCrystal, nearestPrice
 end
 
 -- Mode controls
