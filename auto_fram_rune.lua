@@ -1,8 +1,3 @@
--- ObjectFinder.client.lua
--- ใช้สำหรับทดสอบในเกม Roblox Studio ที่คุณเป็นเจ้าของเท่านั้น
--- วางไฟล์นี้เป็น LocalScript ที่:
--- StarterPlayer > StarterPlayerScripts > ObjectFinder.client.lua
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -29,6 +24,12 @@ local CONFIG = {
 	AutoEHoldTime = 0.01,
 	AutoClickInterval = 0.01,
 
+	-- Crystal Price Fly Finder
+	CrystalFlySpeed = 80,
+	CrystalFlyStopDistance = 1.5,
+
+	-- ปิด Boulder Finder เมื่อค้นหาไม่เจอติดต่อกัน
+	BoulderMaxMisses = 3,
 }
 
 
@@ -37,9 +38,12 @@ local state = {
 	boulderEnabled = false,
 	crystalEnabled = false,
 	crystalPriceEnabled = false,
+	crystalPriceFlyEnabled = false,
 
 	minimumLuck = 20,
 	minimumPrice = 10_000_000,
+
+	boulderMissCount = 0,
 
 	currentMode = nil,
 	currentTarget = nil,
@@ -80,6 +84,7 @@ local function hasAnyFinderEnabled()
 		or state.boulderEnabled
 		or state.crystalEnabled
 		or state.crystalPriceEnabled
+		or state.crystalPriceFlyEnabled
 end
 
 local function setPromptInstant(prompt)
@@ -691,6 +696,7 @@ local function disableAllModes()
 	state.boulderEnabled = false
 	state.crystalEnabled = false
 	state.crystalPriceEnabled = false
+	state.crystalPriceFlyEnabled = false
 	state.modeIndex = 0
 
 	clearTarget()
@@ -706,6 +712,7 @@ end
 
 local function setBoulderEnabled(enabled)
 	state.boulderEnabled = enabled
+	state.boulderMissCount = 0
 
 	if not enabled and state.currentMode == "Boulder" then
 		clearTarget()
@@ -728,6 +735,34 @@ local function setCrystalPriceEnabled(enabled)
 	end
 end
 
+local function setCrystalPriceFlyEnabled(enabled)
+	state.crystalPriceFlyEnabled = enabled
+
+	if not enabled
+		and state.currentMode == "CrystalPriceFly" then
+
+		clearTarget()
+	end
+end
+
+local function registerBoulderSearchResult(foundTarget)
+	if foundTarget then
+		state.boulderMissCount = 0
+		return false
+	end
+
+	state.boulderMissCount += 1
+
+	if state.boulderMissCount < CONFIG.BoulderMaxMisses then
+		return false
+	end
+
+	state.boulderMissCount = 0
+	setBoulderEnabled(false)
+
+	return true
+end
+
 local function isModeEnabled(mode)
 	if mode == "Rune" then
 		return state.runeEnabled
@@ -745,6 +780,10 @@ local function isModeEnabled(mode)
 		return state.crystalPriceEnabled
 	end
 
+	if mode == "CrystalPriceFly" then
+		return state.crystalPriceFlyEnabled
+	end
+
 	return false
 end
 
@@ -753,6 +792,7 @@ local MODE_ORDER = {
 	"Boulder",
 	"Crystal",
 	"CrystalPrice",
+	"CrystalPriceFly",
 }
 
 local function getNextEnabledMode()
@@ -998,9 +1038,9 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.fromOffset(330, 420)
+mainFrame.Size = UDim2.fromOffset(330, 470)
 mainFrame.Position =
-	UDim2.new(0, 30, 0.5, -210)
+	UDim2.new(0, 30, 0.5, -235)
 mainFrame.BackgroundColor3 =
 	Color3.fromRGB(30, 30, 35)
 mainFrame.BorderSizePixel = 0
@@ -1126,9 +1166,12 @@ local crystalButton =
 local crystalPriceButton =
 	createToggleButton("Crystal Price Finder: OFF", 147)
 
+local crystalPriceFlyButton =
+	createToggleButton("Crystal Price Fly: OFF", 196)
+
 local luckLabel = Instance.new("TextLabel")
 luckLabel.Size = UDim2.fromOffset(120, 38)
-luckLabel.Position = UDim2.fromOffset(0, 198)
+luckLabel.Position = UDim2.fromOffset(0, 247)
 luckLabel.BackgroundTransparency = 1
 luckLabel.Text = "Minimum Luck (%)"
 luckLabel.TextColor3 =
@@ -1142,7 +1185,7 @@ luckLabel.Parent = contentFrame
 local luckInput = Instance.new("TextBox")
 luckInput.Size = UDim2.new(1, -130, 0, 38)
 luckInput.Position =
-	UDim2.fromOffset(130, 198)
+	UDim2.fromOffset(130, 247)
 luckInput.BackgroundColor3 =
 	Color3.fromRGB(48, 48, 56)
 luckInput.TextColor3 =
@@ -1162,7 +1205,7 @@ luckCorner.Parent = luckInput
 
 local priceLabel = Instance.new("TextLabel")
 priceLabel.Size = UDim2.fromOffset(120, 38)
-priceLabel.Position = UDim2.fromOffset(0, 243)
+priceLabel.Position = UDim2.fromOffset(0, 292)
 priceLabel.BackgroundTransparency = 1
 priceLabel.Text = "Minimum Price"
 priceLabel.TextColor3 =
@@ -1176,7 +1219,7 @@ priceLabel.Parent = contentFrame
 local priceInput = Instance.new("TextBox")
 priceInput.Size = UDim2.new(1, -130, 0, 38)
 priceInput.Position =
-	UDim2.fromOffset(130, 243)
+	UDim2.fromOffset(130, 292)
 priceInput.BackgroundColor3 =
 	Color3.fromRGB(48, 48, 56)
 priceInput.TextColor3 =
@@ -1196,7 +1239,7 @@ priceCorner.Parent = priceInput
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Position =
-	UDim2.fromOffset(0, 289)
+	UDim2.fromOffset(0, 338)
 statusLabel.Size =
 	UDim2.new(1, 0, 0, 68)
 statusLabel.BackgroundColor3 =
@@ -1296,6 +1339,21 @@ local function updateButtons()
 		crystalPriceButton.BackgroundColor3 =
 			Color3.fromRGB(65, 65, 73)
 	end
+
+	if state.crystalPriceFlyEnabled then
+		crystalPriceFlyButton.Text =
+			"Crystal Price Fly: ON (≥ "
+			.. tostring(state.minimumPrice)
+			.. ")"
+
+		crystalPriceFlyButton.BackgroundColor3 =
+			Color3.fromRGB(45, 135, 80)
+	else
+		crystalPriceFlyButton.Text =
+			"Crystal Price Fly: OFF"
+		crystalPriceFlyButton.BackgroundColor3 =
+			Color3.fromRGB(65, 65, 73)
+	end
 end
 
 local function applyLuckInput()
@@ -1375,6 +1433,15 @@ end)
 crystalPriceButton.MouseButton1Click:Connect(function()
 	setCrystalPriceEnabled(
 		not state.crystalPriceEnabled
+	)
+	updateButtons()
+	updateUtilities()
+	updateAutoE()
+end)
+
+crystalPriceFlyButton.MouseButton1Click:Connect(function()
+	setCrystalPriceFlyEnabled(
+		not state.crystalPriceFlyEnabled
 	)
 	updateButtons()
 	updateUtilities()
@@ -1511,7 +1578,9 @@ local function findTargetForMode(mode, origin)
 		)
 	end
 
-	if mode == "CrystalPrice" then
+	if mode == "CrystalPrice"
+		or mode == "CrystalPriceFly" then
+
 		return findCrystalByPrice(
 			origin,
 			state.minimumPrice
@@ -1540,10 +1609,14 @@ local function countEnabledModes()
 		count += 1
 	end
 
+	if state.crystalPriceFlyEnabled then
+		count += 1
+	end
+
 	return count
 end
 
-RunService.Heartbeat:Connect(function()
+RunService.Heartbeat:Connect(function(deltaTime)
 	if state.closed then
 		return
 	end
@@ -1608,6 +1681,26 @@ RunService.Heartbeat:Connect(function()
 					rootPart.Position
 				)
 
+			if nextMode == "Boulder" then
+				local autoDisabled =
+					registerBoulderSearchResult(target)
+
+				if autoDisabled then
+					updateButtons()
+					updateUtilities()
+					updateAutoE()
+					updateAutoClick()
+
+					statusLabel.Text =
+						"Status: ไม่พบ Boulder ครบ "
+						.. tostring(CONFIG.BoulderMaxMisses)
+						.. " ครั้ง\nBoulders Finder: OFF"
+
+					clearTarget()
+					break
+				end
+			end
+
 			if target then
 				state.currentMode = nextMode
 				state.currentTarget = target
@@ -1618,7 +1711,9 @@ RunService.Heartbeat:Connect(function()
 					state.currentTargetLuck =
 						extraValue
 
-				elseif nextMode == "CrystalPrice" then
+				elseif nextMode == "CrystalPrice"
+					or nextMode == "CrystalPriceFly" then
+
 					state.currentTargetPrice =
 						extraValue
 				end
@@ -1626,6 +1721,12 @@ RunService.Heartbeat:Connect(function()
 				break
 			end
 		end
+	end
+
+	if not state.currentTarget
+		and countEnabledModes() == 0 then
+
+		return
 	end
 
 	if not state.currentTarget then
@@ -1656,6 +1757,14 @@ RunService.Heartbeat:Connect(function()
 			)
 		end
 
+		if state.crystalPriceFlyEnabled then
+			table.insert(
+				enabledNames,
+				"Crystal Price Fly ≥ "
+					.. tostring(state.minimumPrice)
+			)
+		end
+
 		statusLabel.Text =
 			"Status: ไม่พบเป้าหมาย\n"
 			.. table.concat(enabledNames, ", ")
@@ -1682,6 +1791,58 @@ RunService.Heartbeat:Connect(function()
 			.. tostring(
 				state.currentTargetPrice or "?"
 			)
+
+	elseif state.currentMode == "CrystalPriceFly" then
+		local destination =
+			targetPosition
+			+ Vector3.new(
+				0,
+				CONFIG.AboveDistance,
+				0
+			)
+
+		local offset =
+			destination - rootPart.Position
+
+		local distance = offset.Magnitude
+
+		statusLabel.Text =
+			"Mode: Crystal Price Fly"
+			.. "\nTarget: "
+			.. state.currentTarget.Name
+			.. " | Price: "
+			.. tostring(
+				state.currentTargetPrice or "?"
+			)
+			.. " | Distance: "
+			.. string.format("%.1f", distance)
+
+		if distance > CONFIG.CrystalFlyStopDistance then
+			local moveDistance = math.min(
+				distance,
+				CONFIG.CrystalFlySpeed * deltaTime
+			)
+
+			local nextPosition =
+				rootPart.Position
+				+ offset.Unit * moveDistance
+
+			rootPart.CFrame = CFrame.lookAt(
+				nextPosition,
+				destination
+			)
+		else
+			rootPart.CFrame =
+				CFrame.new(destination)
+		end
+
+		rootPart.AssemblyLinearVelocity =
+			Vector3.zero
+
+		rootPart.AssemblyAngularVelocity =
+			Vector3.zero
+
+		return
 
 	elseif state.currentMode == "Crystal" then
 		statusLabel.Text =
