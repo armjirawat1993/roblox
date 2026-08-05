@@ -1,8 +1,3 @@
--- ObjectFinder.client.lua
--- ใช้สำหรับทดสอบในเกม Roblox Studio ที่คุณเป็นเจ้าของเท่านั้น
--- วางไฟล์นี้เป็น LocalScript ที่:
--- StarterPlayer > StarterPlayerScripts > ObjectFinder.client.lua
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -32,6 +27,9 @@ local CONFIG = {
 	-- Crystal Price Fly Finder
 	CrystalFlySpeed = 80,
 	CrystalFlyStopDistance = 1.5,
+
+	-- ระยะยืนด้านหลัง Boulder
+	BoulderBehindDistance = 1,
 
 	-- ปิด Boulder Finder เมื่อค้นหาไม่เจอติดต่อกัน
 	BoulderMaxMisses = 3,
@@ -266,6 +264,58 @@ local function getObjectTopPosition(object)
 		maxY,
 		(minZ + maxZ) * 0.5
 	)
+end
+
+local function getObjectBehindPosition(object, distance)
+	if not object then
+		return nil
+	end
+
+	distance = distance or 4
+
+	local pivotCFrame = nil
+	local sizeY = 0
+
+	if object:IsA("BasePart") then
+		pivotCFrame = object.CFrame
+		sizeY = object.Size.Y
+	elseif object:IsA("Model") then
+		local success, result = pcall(function()
+			return object:GetPivot()
+		end)
+
+		if success then
+			pivotCFrame = result
+		end
+
+		local boxSuccess, _, boxSize = pcall(function()
+			local cf, size = object:GetBoundingBox()
+			return cf, size
+		end)
+
+		if boxSuccess and boxSize then
+			sizeY = boxSize.Y
+		end
+	else
+		local firstPart =
+			object:FindFirstChildWhichIsA("BasePart", true)
+
+		if firstPart then
+			pivotCFrame = firstPart.CFrame
+			sizeY = firstPart.Size.Y
+		end
+	end
+
+	if not pivotCFrame then
+		return getObjectTopPosition(object)
+	end
+
+	local behindPosition =
+		pivotCFrame.Position
+		- pivotCFrame.LookVector * distance
+
+	return behindPosition
+		+ Vector3.new(0, math.max(2, sizeY * 0.15), 0)
 end
 
 local function clearTarget()
@@ -1765,10 +1815,18 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 
-	local targetPosition =
-		getObjectTopPosition(
+	local targetPosition
+
+	if state.currentMode == "Boulder" then
+		targetPosition = getObjectBehindPosition(
+			state.currentTarget,
+			CONFIG.BoulderBehindDistance
+		)
+	else
+		targetPosition = getObjectTopPosition(
 			state.currentTarget
 		)
+	end
 
 	if not targetPosition then
 		clearTarget()
@@ -1856,15 +1914,29 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			.. state.currentTarget.Name
 	end
 
-	-- ค้างเหนือ Object จน Object ถูกลบ
-	rootPart.CFrame = CFrame.new(
-		targetPosition
-			+ Vector3.new(
-				0,
-				CONFIG.AboveDistance,
-				0
+	if state.currentMode == "Boulder" then
+		local objectPosition =
+			getObjectTopPosition(state.currentTarget)
+
+		if objectPosition then
+			rootPart.CFrame = CFrame.lookAt(
+				targetPosition,
+				objectPosition
 			)
-	)
+		else
+			rootPart.CFrame = CFrame.new(targetPosition)
+		end
+	else
+		-- โหมดอื่นค้างเหนือ Object
+		rootPart.CFrame = CFrame.new(
+			targetPosition
+				+ Vector3.new(
+					0,
+					CONFIG.AboveDistance,
+					0
+				)
+		)
+	end
 
 	rootPart.AssemblyLinearVelocity =
 		Vector3.zero
