@@ -26,7 +26,7 @@ local CONFIG = {
 	AutoClickInterval = 0.01,
 
 	-- การเคลื่อนที่ของ Finder ทุกโหมด
-	FinderFlySpeed = 130,
+	FinderFlySpeed = 150,
 	FinderFlyStopDistance = 1.5,
 
 	-- ระยะเหนือ Boulder
