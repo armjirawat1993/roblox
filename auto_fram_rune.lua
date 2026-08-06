@@ -17,6 +17,29 @@ if not player then
 	return
 end
 
+local playerGui = player:WaitForChild("PlayerGui")
+
+local function removeSellGui()
+	for _, object in ipairs(playerGui:GetDescendants()) do
+		if object.Name == "Sell" then
+			object:Destroy()
+		end
+	end
+end
+
+removeSellGui()
+
+playerGui.DescendantAdded:Connect(function(object)
+	if object.Name == "Sell" then
+		task.defer(function()
+			if object and object.Parent then
+				object:Destroy()
+			end
+		end)
+	end
+end)
+
+
 local CONFIG = {
 	SearchInterval = 0.25,
 	RuneKeyword = "rune",
@@ -1364,8 +1387,6 @@ local function updateAutoClick()
 end
 
 -- GUI
-
-local playerGui = player:WaitForChild("PlayerGui")
 
 local oldGui =
 	playerGui:FindFirstChild("ObjectFinderGui")
