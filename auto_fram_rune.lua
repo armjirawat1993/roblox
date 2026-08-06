@@ -46,8 +46,9 @@ local CONFIG = {
 	SellConfirmDelay = 1.0,
 	SellReturnDelay = 1.0,
 	SellOptionKey = 1,
-	SellOptionPressDelay = 1.0
-	SellOptionPressCount = 4, -- จำนวนรอบกดเลข 1 (ตั้งเป็น 3 หรือ 4 ได้)
+	SellOptionPressDelay = 1.0,
+	-- จำนวนรอบกดเลข 1 (ตั้งเป็น 3 หรือ 4 ได้)
+	SellOptionPressCount = 4, 
 	SellOptionPressInterval = 0.15,
 }
 
