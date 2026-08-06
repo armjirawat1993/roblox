@@ -3,6 +3,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 if not RunService:IsClient() then
 	warn("ObjectFinder ต้องรันจาก LocalScript ฝั่ง Client")
@@ -23,16 +24,31 @@ local CONFIG = {
 	AutoEInterval = 0.01,
 	AutoEHoldTime = 0.01,
 	AutoClickInterval = 0.01,
+	SellOptionKey = 1,
+	SellOptionPressDelay = 0.10,
+	SellOptionPressCount = 4, -- จำนวนรอบกดเลข 1 (ตั้งเป็น 3 หรือ 4 ได้)
+	SellOptionPressInterval = 0.15,
 
-	-- Crystal Price Fly Finder
-	CrystalFlySpeed = 80,
-	CrystalFlyStopDistance = 1.5,
+	-- การเคลื่อนที่ของ Finder ทุกโหมด
+	FinderFlySpeed = 130,
+	FinderFlyStopDistance = 1.5,
 
-	-- ระยะยืนด้านหลัง Boulder
-	BoulderBehindDistance = 1,
+	-- ระยะเหนือ Boulder
+	BoulderAboveDistance = 0,
 
 	-- ปิด Boulder Finder เมื่อค้นหาไม่เจอติดต่อกัน
 	BoulderMaxMisses = 3,
+
+	-- Auto Sell Navigation
+	SellPosition = Vector3.new(-49.969, 29.178, 1067.431),
+	SellFlySpeed = 130,
+	SellStopDistance = 2,
+	SellCheckInterval = 0.25,
+
+	-- Delay ระบบขาย
+	SellArrivalDelay = 1.0,
+	SellConfirmDelay = 1.0,
+	SellReturnDelay = 1.0,
 }
 
 
@@ -41,12 +57,32 @@ local state = {
 	boulderEnabled = false,
 	crystalEnabled = false,
 	crystalPriceEnabled = false,
-	crystalPriceFlyEnabled = false,
+
+	autoSellEnabled = false,
+	sellActive = false,
+	sellReturning = false,
+	sellWaitingForSale = false,
+	sellArrivalStartedAt = nil,
+	sellCompletedAt = nil,
+	sellPromptTriggered = false,
+	sellPromptTriggeredAt = nil,
+	sellOptionPressed = false,
+	sellOptionPressCurrent = 0,
+	sellAutoEAllowed = false,
+	sellAutoEWasRunning = false,
+	sellStartedWithFly = false,
+	sellStartCFrame = nil,
+	lastSellCheck = 0,
 
 	minimumLuck = 20,
 	minimumPrice = 10_000_000,
 
+	-- เลือกได้ทีละแบบ: วาป หรือ บินไป
+	teleportToTargetEnabled = true,
+	flyToTargetEnabled = false,
+
 	boulderMissCount = 0,
+	hoverCFrame = nil,
 
 	currentMode = nil,
 	currentTarget = nil,
@@ -74,20 +110,159 @@ local function getCharacter()
 	return character, humanoid, rootPart
 end
 
+-- BodyVelocity / BodyGyro Fly Stabilizer
+
+local utilityState
+
+local flyVelocity = nil
+local flyGyro = nil
+local flyConnection = nil
+
+local function stopFly()
+	if flyConnection then
+		flyConnection:Disconnect()
+		flyConnection = nil
+	end
+
+	if flyVelocity then
+		flyVelocity:Destroy()
+		flyVelocity = nil
+	end
+
+	if flyGyro then
+		flyGyro:Destroy()
+		flyGyro = nil
+	end
+
+	local _, humanoid, rootPart = getCharacter()
+
+	if humanoid then
+		humanoid.PlatformStand = false
+		humanoid.AutoRotate = true
+		humanoid:ChangeState(
+			Enum.HumanoidStateType.GettingUp
+		)
+	end
+
+	if rootPart then
+		rootPart.AssemblyLinearVelocity = Vector3.zero
+		rootPart.AssemblyAngularVelocity = Vector3.zero
+	end
+end
+
+local function startFly()
+	if state.closed then
+		return
+	end
+
+	stopFly()
+
+	local _, humanoid, rootPart = getCharacter()
+
+	if not rootPart or not humanoid then
+		return
+	end
+
+	humanoid.PlatformStand = true
+	humanoid.AutoRotate = false
+
+	flyVelocity = Instance.new("BodyVelocity")
+	flyVelocity.Name = "ObjectFinderFlyVelocity"
+	flyVelocity.MaxForce = Vector3.new(
+		math.huge,
+		math.huge,
+		math.huge
+	)
+	flyVelocity.P = 10000
+	flyVelocity.Velocity = Vector3.zero
+	flyVelocity.Parent = rootPart
+
+	flyGyro = Instance.new("BodyGyro")
+	flyGyro.Name = "ObjectFinderFlyGyro"
+	flyGyro.MaxTorque = Vector3.new(
+		math.huge,
+		math.huge,
+		math.huge
+	)
+	flyGyro.P = 10000
+	flyGyro.D = 100
+	flyGyro.CFrame = rootPart.CFrame
+	flyGyro.Parent = rootPart
+
+	flyConnection = RunService.RenderStepped:Connect(function()
+		if state.closed
+			or not utilityState.active then
+
+			return
+		end
+
+		local _, currentHumanoid, currentRoot =
+			getCharacter()
+
+		if not currentRoot or not currentHumanoid then
+			stopFly()
+			return
+		end
+
+		if not flyVelocity
+			or not flyVelocity.Parent
+			or not flyGyro
+			or not flyGyro.Parent then
+
+			return
+		end
+
+		currentHumanoid.PlatformStand = true
+		currentHumanoid.AutoRotate = false
+
+		-- BodyVelocity เป็นตัวพยุงไม่ให้ตก
+		flyVelocity.Velocity = Vector3.zero
+
+		local lookVector =
+			currentRoot.CFrame.LookVector
+
+		local flatLook = Vector3.new(
+			lookVector.X,
+			0,
+			lookVector.Z
+		)
+
+		if flatLook.Magnitude > 0.001 then
+			flyGyro.CFrame = CFrame.lookAt(
+				currentRoot.Position,
+				currentRoot.Position
+					+ flatLook.Unit,
+				Vector3.yAxis
+			)
+		end
+
+		currentRoot.AssemblyLinearVelocity =
+			Vector3.zero
+
+		currentRoot.AssemblyAngularVelocity =
+			Vector3.zero
+	end)
+end
+
 -- Utility state: เปิดอัตโนมัติเมื่อ Finder อย่างน้อยหนึ่งโหมดเป็น ON
-local utilityState = {
+utilityState = {
 	active = false,
 	originalCollisions = {},
 	originalPrompts = {},
 	originalPlatformStand = nil,
 }
 
-local function hasAnyFinderEnabled()
+local function hasFinderModeEnabled()
 	return state.runeEnabled
 		or state.boulderEnabled
 		or state.crystalEnabled
 		or state.crystalPriceEnabled
-		or state.crystalPriceFlyEnabled
+end
+
+local function hasAnyFinderEnabled()
+	return hasFinderModeEnabled()
+		or state.sellActive
+		or state.sellWaitingForSale
 end
 
 local function setPromptInstant(prompt)
@@ -144,14 +319,18 @@ local function enableUtilities()
 			setPromptInstant(object)
 		end
 	end
+
+	startFly()
 end
 
 local function disableUtilities()
 	if not utilityState.active then
+		stopFly()
 		return
 	end
 
 	utilityState.active = false
+	stopFly()
 
 	for part, originalCanCollide in pairs(utilityState.originalCollisions) do
 		if part and part.Parent then
@@ -170,14 +349,8 @@ local function disableUtilities()
 	local _, humanoid, rootPart = getCharacter()
 
 	if humanoid then
-		humanoid.PlatformStand =
-			utilityState.originalPlatformStand == true
-
-		if not humanoid.PlatformStand then
-			humanoid:ChangeState(
-				Enum.HumanoidStateType.GettingUp
-			)
-		end
+		humanoid.PlatformStand = false
+		humanoid.AutoRotate = true
 	end
 
 	if rootPart then
@@ -316,6 +489,49 @@ local function getObjectBehindPosition(object, distance)
 
 	return behindPosition
 		+ Vector3.new(0, math.max(2, sizeY * 0.15), 0)
+end
+
+local function getUprightCFrame(position, lookDirection)
+	local flatDirection = Vector3.new(
+		lookDirection and lookDirection.X or 0,
+		0,
+		lookDirection and lookDirection.Z or -1
+	)
+
+	if flatDirection.Magnitude < 0.001 then
+		flatDirection = Vector3.new(0, 0, -1)
+	else
+		flatDirection = flatDirection.Unit
+	end
+
+	return CFrame.lookAt(
+		position,
+		position + flatDirection,
+		Vector3.yAxis
+	)
+end
+
+local function holdCharacterPosition(rootPart)
+	if not rootPart then
+		return
+	end
+
+	if not state.hoverCFrame then
+		local currentPosition = rootPart.Position
+
+		state.hoverCFrame = getUprightCFrame(
+			Vector3.new(
+				currentPosition.X,
+				currentPosition.Y,
+				currentPosition.Z
+			),
+			rootPart.CFrame.LookVector
+		)
+	end
+
+	rootPart.CFrame = state.hoverCFrame
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	rootPart.AssemblyAngularVelocity = Vector3.zero
 end
 
 local function clearTarget()
@@ -739,7 +955,20 @@ local function disableAllModes()
 	state.boulderEnabled = false
 	state.crystalEnabled = false
 	state.crystalPriceEnabled = false
-	state.crystalPriceFlyEnabled = false
+	state.autoSellEnabled = false
+	state.sellActive = false
+	state.sellReturning = false
+	state.sellWaitingForSale = false
+	state.sellArrivalStartedAt = nil
+	state.sellCompletedAt = nil
+	state.sellPromptTriggered = false
+	state.sellPromptTriggeredAt = nil
+	state.sellOptionPressed = false
+	state.sellOptionPressCurrent = 0
+	state.sellAutoEAllowed = false
+	state.sellAutoEWasRunning = false
+	state.sellStartedWithFly = false
+	state.sellStartCFrame = nil
 	state.modeIndex = 0
 
 	clearTarget()
@@ -774,16 +1003,6 @@ local function setCrystalPriceEnabled(enabled)
 	state.crystalPriceEnabled = enabled
 
 	if not enabled and state.currentMode == "CrystalPrice" then
-		clearTarget()
-	end
-end
-
-local function setCrystalPriceFlyEnabled(enabled)
-	state.crystalPriceFlyEnabled = enabled
-
-	if not enabled
-		and state.currentMode == "CrystalPriceFly" then
-
 		clearTarget()
 	end
 end
@@ -823,10 +1042,6 @@ local function isModeEnabled(mode)
 		return state.crystalPriceEnabled
 	end
 
-	if mode == "CrystalPriceFly" then
-		return state.crystalPriceFlyEnabled
-	end
-
 	return false
 end
 
@@ -835,7 +1050,6 @@ local MODE_ORDER = {
 	"Boulder",
 	"Crystal",
 	"CrystalPrice",
-	"CrystalPriceFly",
 }
 
 local function getNextEnabledMode()
@@ -853,6 +1067,84 @@ local function getNextEnabledMode()
 	return nil
 end
 
+
+
+-- Keyboard auto click
+-- รองรับเลข 0-9 เช่น autoclick(1)
+
+local numberKeyMap = {
+	[0] = Enum.KeyCode.Zero,
+	[1] = Enum.KeyCode.One,
+	[2] = Enum.KeyCode.Two,
+	[3] = Enum.KeyCode.Three,
+	[4] = Enum.KeyCode.Four,
+	[5] = Enum.KeyCode.Five,
+	[6] = Enum.KeyCode.Six,
+	[7] = Enum.KeyCode.Seven,
+	[8] = Enum.KeyCode.Eight,
+	[9] = Enum.KeyCode.Nine,
+}
+
+local virtualKeyMap = {
+	[0] = 0x30,
+	[1] = 0x31,
+	[2] = 0x32,
+	[3] = 0x33,
+	[4] = 0x34,
+	[5] = 0x35,
+	[6] = 0x36,
+	[7] = 0x37,
+	[8] = 0x38,
+	[9] = 0x39,
+}
+
+local function autoclick(btn)
+	btn = tonumber(btn)
+
+	local keyCode = numberKeyMap[btn]
+	local virtualKey = virtualKeyMap[btn]
+
+	if not keyCode or not virtualKey then
+		warn("autoclick: รองรับเฉพาะเลข 0-9")
+		return false
+	end
+
+	local success, errorMessage = pcall(function()
+		-- Executor บางตัวรองรับ keypress/keyrelease และกด Hotbar ได้ตรงกว่า
+		if typeof(keypress) == "function"
+			and typeof(keyrelease) == "function" then
+
+			keypress(virtualKey)
+			task.wait(0.05)
+			keyrelease(virtualKey)
+			return
+		end
+
+		-- Fallback สำหรับสภาพแวดล้อมที่รองรับ VirtualInputManager
+		VirtualInputManager:SendKeyEvent(
+			true,
+			keyCode,
+			false,
+			game
+		)
+
+		task.wait(0.05)
+
+		VirtualInputManager:SendKeyEvent(
+			false,
+			keyCode,
+			false,
+			game
+		)
+	end)
+
+	if not success then
+		warn("autoclick error:", errorMessage)
+		return false
+	end
+
+	return true
+end
 
 -- Auto E
 -- เปิดอัตโนมัติเมื่อ Finder อย่างน้อยหนึ่งโหมดเป็น ON
@@ -965,7 +1257,17 @@ local function startAutoE()
 end
 
 local function updateAutoE()
-	if hasAnyFinderEnabled() then
+	-- ระหว่างกระบวนการ Auto Sell ให้ Auto E ทำงานเฉพาะตอนถึงจุดขายแล้วเท่านั้น
+	if state.sellActive or state.sellWaitingForSale then
+		if state.sellAutoEAllowed then
+			startAutoE()
+		else
+			stopAutoE()
+		end
+		return
+	end
+
+	if hasFinderModeEnabled() then
 		startAutoE()
 	else
 		stopAutoE()
@@ -1081,9 +1383,9 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.fromOffset(330, 470)
+mainFrame.Size = UDim2.fromOffset(330, 570)
 mainFrame.Position =
-	UDim2.new(0, 30, 0.5, -235)
+	UDim2.new(0, 30, 0.5, -285)
 mainFrame.BackgroundColor3 =
 	Color3.fromRGB(30, 30, 35)
 mainFrame.BorderSizePixel = 0
@@ -1197,24 +1499,43 @@ local function createToggleButton(text, yPosition)
 	return button
 end
 
+-- ปุ่มโหมดการเคลื่อนที่อยู่แถวบนสุด แบ่งครึ่งซ้าย/ขวา
+local teleportModeButton =
+	createToggleButton("Teleport: ON", 0)
+teleportModeButton.Size = UDim2.new(0.5, -4, 0, 42)
+teleportModeButton.Position = UDim2.fromOffset(0, 0)
+
+local flyModeButton =
+	createToggleButton("Fly: OFF", 0)
+flyModeButton.Size = UDim2.new(0.5, -4, 0, 42)
+flyModeButton.Position = UDim2.new(0.5, 4, 0, 0)
+
 local runeButton =
-	createToggleButton("Rune Finder: OFF", 0)
+	createToggleButton("Rune Finder: OFF", 49)
 
 local boulderButton =
-	createToggleButton("Boulders Finder: OFF", 49)
+	createToggleButton("Boulders Finder: OFF", 98)
 
 local crystalButton =
-	createToggleButton("Crystal Luck Finder: OFF", 98)
+	createToggleButton("Crystal Luck Finder: OFF", 147)
 
 local crystalPriceButton =
-	createToggleButton("Crystal Price Finder: OFF", 147)
+	createToggleButton("Crystal Price Finder: OFF", 196)
 
-local crystalPriceFlyButton =
-	createToggleButton("Crystal Price Fly: OFF", 196)
+-- Auto Sell และ Sell Now อยู่แถวเดียวกัน
+local autoSellButton =
+	createToggleButton("Auto Sell: OFF", 245)
+autoSellButton.Size = UDim2.new(0.5, -4, 0, 42)
+autoSellButton.Position = UDim2.fromOffset(0, 245)
+
+local sellNowButton =
+	createToggleButton("Sell Now", 245)
+sellNowButton.Size = UDim2.new(0.5, -4, 0, 42)
+sellNowButton.Position = UDim2.new(0.5, 4, 0, 245)
 
 local luckLabel = Instance.new("TextLabel")
 luckLabel.Size = UDim2.fromOffset(120, 38)
-luckLabel.Position = UDim2.fromOffset(0, 247)
+luckLabel.Position = UDim2.fromOffset(0, 294)
 luckLabel.BackgroundTransparency = 1
 luckLabel.Text = "Minimum Luck (%)"
 luckLabel.TextColor3 =
@@ -1228,7 +1549,7 @@ luckLabel.Parent = contentFrame
 local luckInput = Instance.new("TextBox")
 luckInput.Size = UDim2.new(1, -130, 0, 38)
 luckInput.Position =
-	UDim2.fromOffset(130, 247)
+	UDim2.fromOffset(130, 294)
 luckInput.BackgroundColor3 =
 	Color3.fromRGB(48, 48, 56)
 luckInput.TextColor3 =
@@ -1248,7 +1569,7 @@ luckCorner.Parent = luckInput
 
 local priceLabel = Instance.new("TextLabel")
 priceLabel.Size = UDim2.fromOffset(120, 38)
-priceLabel.Position = UDim2.fromOffset(0, 292)
+priceLabel.Position = UDim2.fromOffset(0, 339)
 priceLabel.BackgroundTransparency = 1
 priceLabel.Text = "Minimum Price"
 priceLabel.TextColor3 =
@@ -1262,7 +1583,7 @@ priceLabel.Parent = contentFrame
 local priceInput = Instance.new("TextBox")
 priceInput.Size = UDim2.new(1, -130, 0, 38)
 priceInput.Position =
-	UDim2.fromOffset(130, 292)
+	UDim2.fromOffset(130, 339)
 priceInput.BackgroundColor3 =
 	Color3.fromRGB(48, 48, 56)
 priceInput.TextColor3 =
@@ -1282,7 +1603,7 @@ priceCorner.Parent = priceInput
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Position =
-	UDim2.fromOffset(0, 338)
+	UDim2.fromOffset(0, 385)
 statusLabel.Size =
 	UDim2.new(1, 0, 0, 68)
 statusLabel.BackgroundColor3 =
@@ -1328,29 +1649,215 @@ logoStroke.Color =
 	Color3.fromRGB(100, 100, 115)
 logoStroke.Parent = logoButton
 
+-- Auto Sell Navigation helpers
+
+local function getBagTextObject()
+	-- โครงสร้างเป้าหมาย:
+	-- Players > LocalPlayer > ExplorerHud > BackpackPanel > Value
+	-- บางเกมอาจเก็บ ExplorerHud ไว้ใน PlayerGui จึงรองรับทั้งสองตำแหน่ง
+	local explorerHud = player:FindFirstChild("ExplorerHud")
+
+	if not explorerHud then
+		explorerHud = playerGui:FindFirstChild("ExplorerHud", true)
+	end
+
+	if not explorerHud then
+		return nil
+	end
+
+	local backpackPanel = explorerHud:FindFirstChild("BackpackPanel", true)
+
+	if not backpackPanel then
+		return nil
+	end
+
+	local valueObject = backpackPanel:FindFirstChild("Value", true)
+
+	if valueObject
+		and (
+			valueObject:IsA("TextLabel")
+			or valueObject:IsA("TextButton")
+			or valueObject:IsA("TextBox")
+		) then
+
+		return valueObject
+	end
+
+	return nil
+end
+
+local function isBagFull()
+	local valueObject = getBagTextObject()
+
+	if not valueObject then
+		return false
+	end
+
+	local normalized = tostring(valueObject.Text):upper()
+
+	-- รองรับ FULL, FULL!, BAG FULL, 100/FULL และข้อความอื่นที่มีคำว่า FULL
+	return string.find(normalized, "FULL", 1, true) ~= nil
+end
+
+local function beginSellNavigation()
+	if state.sellActive or state.sellWaitingForSale then
+		return
+	end
+
+	local _, _, rootPart = getCharacter()
+
+	if not rootPart then
+		return
+	end
+
+	state.sellStartedWithFly =
+		utilityState.active
+		or hasFinderModeEnabled()
+
+	state.sellStartCFrame = rootPart.CFrame
+	state.sellActive = true
+	state.sellReturning = false
+	state.sellWaitingForSale = false
+	state.sellArrivalStartedAt = nil
+	state.sellCompletedAt = nil
+	state.sellPromptTriggered = false
+	state.sellPromptTriggeredAt = nil
+	state.sellOptionPressed = false
+	state.sellOptionPressCurrent = 0
+	state.sellAutoEAllowed = false
+
+	-- จำสถานะ Auto E ก่อนเริ่มขาย เพื่อเปิดกลับเมื่อกลับถึงจุดเดิม
+	state.sellAutoEWasRunning =
+		autoEState.running
+		or hasFinderModeEnabled()
+
+	-- ทั้ง Auto Sell และปุ่ม Sell Now จะปิด Auto E ระหว่างเดินทาง
+	stopAutoE()
+
+	state.hoverCFrame = getUprightCFrame(
+		rootPart.Position,
+		rootPart.CFrame.LookVector
+	)
+	clearTarget()
+	updateUtilities()
+end
+
+
+local function cancelSellNavigation(reason)
+	if not state.sellActive and not state.sellWaitingForSale then
+		return false
+	end
+
+	-- ปิด Auto Sell เพื่อป้องกันเริ่มขายซ้ำทันที หากกระเป๋ายัง FULL
+	state.autoSellEnabled = false
+
+	local _, _, rootPart = getCharacter()
+
+	-- กลับไปยังตำแหน่งก่อนเริ่มขายทันที
+	if rootPart and state.sellStartCFrame then
+		rootPart.CFrame = state.sellStartCFrame
+		rootPart.AssemblyLinearVelocity = Vector3.zero
+		rootPart.AssemblyAngularVelocity = Vector3.zero
+	end
+
+	state.sellActive = false
+	state.sellReturning = false
+	state.sellWaitingForSale = false
+	state.sellArrivalStartedAt = nil
+	state.sellCompletedAt = nil
+	state.sellPromptTriggered = false
+	state.sellPromptTriggeredAt = nil
+	state.sellOptionPressed = false
+	state.sellOptionPressCurrent = 0
+	state.sellAutoEAllowed = false
+
+	local shouldRestoreAutoE =
+		state.sellAutoEWasRunning
+		or hasFinderModeEnabled()
+
+	local shouldKeepFly =
+		state.sellStartedWithFly
+		or hasFinderModeEnabled()
+
+	state.sellAutoEWasRunning = false
+	state.sellStartedWithFly = false
+	state.sellStartCFrame = nil
+
+	if rootPart then
+		state.hoverCFrame = rootPart.CFrame
+	else
+		state.hoverCFrame = nil
+	end
+
+	if shouldKeepFly then
+		updateUtilities()
+	else
+		disableUtilities()
+		stopFly()
+		state.hoverCFrame = nil
+	end
+
+	if shouldRestoreAutoE then
+		startAutoE()
+	else
+		updateAutoE()
+	end
+
+	if statusLabel then
+		statusLabel.Text =
+			"Status: ยกเลิกการขายแล้ว"
+			.. (reason and (" (" .. tostring(reason) .. ")") or "")
+	end
+
+	return true
+end
+
+
 -- GUI update functions
+
+-- สีประจำปุ่ม: OFF เป็นสีเข้ม และ ON เป็นสีสว่าง
+local BUTTON_COLORS = {
+	TeleportOn = Color3.fromRGB(35, 125, 205),
+	TeleportOff = Color3.fromRGB(42, 61, 78),
+	FlyOn = Color3.fromRGB(125, 75, 205),
+	FlyOff = Color3.fromRGB(58, 46, 78),
+
+	RuneOn = Color3.fromRGB(145, 70, 205),
+	RuneOff = Color3.fromRGB(65, 46, 78),
+	BoulderOn = Color3.fromRGB(205, 115, 45),
+	BoulderOff = Color3.fromRGB(78, 58, 42),
+	CrystalLuckOn = Color3.fromRGB(35, 155, 165),
+	CrystalLuckOff = Color3.fromRGB(40, 70, 73),
+	CrystalPriceOn = Color3.fromRGB(190, 145, 35),
+	CrystalPriceOff = Color3.fromRGB(78, 68, 40),
+
+	AutoSellOn = Color3.fromRGB(45, 150, 80),
+	AutoSellOff = Color3.fromRGB(43, 73, 55),
+	SellReady = Color3.fromRGB(185, 75, 55),
+	SellBusy = Color3.fromRGB(205, 135, 45),
+}
 
 local function updateButtons()
 	if state.runeEnabled then
 		runeButton.Text = "Rune Finder: ON"
 		runeButton.BackgroundColor3 =
-			Color3.fromRGB(45, 135, 80)
+			BUTTON_COLORS.RuneOn
 	else
 		runeButton.Text = "Rune Finder: OFF"
 		runeButton.BackgroundColor3 =
-			Color3.fromRGB(65, 65, 73)
+			BUTTON_COLORS.RuneOff
 	end
 
 	if state.boulderEnabled then
 		boulderButton.Text =
 			"Boulders Finder: ON"
 		boulderButton.BackgroundColor3 =
-			Color3.fromRGB(45, 135, 80)
+			BUTTON_COLORS.BoulderOn
 	else
 		boulderButton.Text =
 			"Boulders Finder: OFF"
 		boulderButton.BackgroundColor3 =
-			Color3.fromRGB(65, 65, 73)
+			BUTTON_COLORS.BoulderOff
 	end
 
 	if state.crystalEnabled then
@@ -1360,12 +1867,12 @@ local function updateButtons()
 			.. "%)"
 
 		crystalButton.BackgroundColor3 =
-			Color3.fromRGB(45, 135, 80)
+			BUTTON_COLORS.CrystalLuckOn
 	else
 		crystalButton.Text =
 			"Crystal Luck Finder: OFF"
 		crystalButton.BackgroundColor3 =
-			Color3.fromRGB(65, 65, 73)
+			BUTTON_COLORS.CrystalLuckOff
 	end
 
 	if state.crystalPriceEnabled then
@@ -1375,27 +1882,52 @@ local function updateButtons()
 			.. ")"
 
 		crystalPriceButton.BackgroundColor3 =
-			Color3.fromRGB(45, 135, 80)
+			BUTTON_COLORS.CrystalPriceOn
 	else
 		crystalPriceButton.Text =
 			"Crystal Price Finder: OFF"
 		crystalPriceButton.BackgroundColor3 =
-			Color3.fromRGB(65, 65, 73)
+			BUTTON_COLORS.CrystalPriceOff
 	end
 
-	if state.crystalPriceFlyEnabled then
-		crystalPriceFlyButton.Text =
-			"Crystal Price Fly: ON (≥ "
-			.. tostring(state.minimumPrice)
-			.. ")"
+	teleportModeButton.Text = state.teleportToTargetEnabled
+		and "Teleport: ON"
+		or "Teleport: OFF"
+	teleportModeButton.BackgroundColor3 = state.teleportToTargetEnabled
+		and BUTTON_COLORS.TeleportOn
+		or BUTTON_COLORS.TeleportOff
 
-		crystalPriceFlyButton.BackgroundColor3 =
-			Color3.fromRGB(45, 135, 80)
+	flyModeButton.Text = state.flyToTargetEnabled
+		and "Fly: ON"
+		or "Fly: OFF"
+	flyModeButton.BackgroundColor3 = state.flyToTargetEnabled
+		and BUTTON_COLORS.FlyOn
+		or BUTTON_COLORS.FlyOff
+
+	if state.sellActive or state.sellWaitingForSale then
+		autoSellButton.Text = "Cancel Auto Sell"
+		autoSellButton.BackgroundColor3 =
+			BUTTON_COLORS.SellBusy
 	else
-		crystalPriceFlyButton.Text =
-			"Crystal Price Fly: OFF"
-		crystalPriceFlyButton.BackgroundColor3 =
-			Color3.fromRGB(65, 65, 73)
+		if state.autoSellEnabled then
+			autoSellButton.Text = "Auto Sell: ON"
+			autoSellButton.BackgroundColor3 =
+				BUTTON_COLORS.AutoSellOn
+		else
+			autoSellButton.Text = "Auto Sell: OFF"
+			autoSellButton.BackgroundColor3 =
+				BUTTON_COLORS.AutoSellOff
+		end
+	end
+
+	if state.sellActive or state.sellWaitingForSale then
+		sellNowButton.Text = "Cancel Sell"
+		sellNowButton.BackgroundColor3 =
+			BUTTON_COLORS.SellBusy
+	else
+		sellNowButton.Text = "Sell Now"
+		sellNowButton.BackgroundColor3 =
+			BUTTON_COLORS.SellReady
 	end
 end
 
@@ -1482,13 +2014,59 @@ crystalPriceButton.MouseButton1Click:Connect(function()
 	updateAutoE()
 end)
 
-crystalPriceFlyButton.MouseButton1Click:Connect(function()
-	setCrystalPriceFlyEnabled(
-		not state.crystalPriceFlyEnabled
-	)
+teleportModeButton.MouseButton1Click:Connect(function()
+	state.teleportToTargetEnabled = not state.teleportToTargetEnabled
+
+	if state.teleportToTargetEnabled then
+		state.flyToTargetEnabled = false
+	elseif not state.flyToTargetEnabled then
+		state.flyToTargetEnabled = true
+	end
+
+	state.hoverCFrame = nil
 	updateButtons()
-	updateUtilities()
-	updateAutoE()
+end)
+
+flyModeButton.MouseButton1Click:Connect(function()
+	state.flyToTargetEnabled = not state.flyToTargetEnabled
+
+	if state.flyToTargetEnabled then
+		state.teleportToTargetEnabled = false
+	elseif not state.teleportToTargetEnabled then
+		state.teleportToTargetEnabled = true
+	end
+
+	state.hoverCFrame = nil
+	updateButtons()
+end)
+
+autoSellButton.MouseButton1Click:Connect(function()
+	if state.sellActive or state.sellWaitingForSale then
+		cancelSellNavigation("Auto Sell")
+		updateButtons()
+		return
+	end
+
+	state.autoSellEnabled =
+		not state.autoSellEnabled
+
+	updateButtons()
+
+	statusLabel.Text =
+		state.autoSellEnabled
+		and "Status: Auto Sell รอกระเป๋า FULL!"
+		or "Status: Auto Sell ปิดแล้ว"
+end)
+
+sellNowButton.MouseButton1Click:Connect(function()
+	if state.sellActive or state.sellWaitingForSale then
+		cancelSellNavigation("Sell Now")
+		updateButtons()
+		return
+	end
+
+	beginSellNavigation()
+	updateButtons()
 end)
 
 luckInput.FocusLost:Connect(function()
@@ -1533,6 +2111,7 @@ closeButton.MouseButton1Click:Connect(function()
 	state.closed = true
 	disableAllModes()
 	disableUtilities()
+	stopFly()
 	stopAutoE()
 	stopAutoClick()
 	table.clear(autoEState.visiblePrompts)
@@ -1560,6 +2139,7 @@ player.CharacterAdded:Connect(function()
 		table.clear(utilityState.originalCollisions)
 		utilityState.originalPlatformStand = nil
 		enableUtilities()
+		startFly()
 	end
 
 	if state.boulderEnabled then
@@ -1595,11 +2175,30 @@ RunService.Stepped:Connect(function()
 	-- Fly/Hover สำหรับระบบวาร์ป
 	if humanoid then
 		humanoid.PlatformStand = true
+		humanoid.AutoRotate = false
+	end
+
+	if rootPart
+		and (
+			not flyVelocity
+			or not flyVelocity.Parent
+			or not flyGyro
+			or not flyGyro.Parent
+		) then
+
+		startFly()
 	end
 
 	if rootPart then
 		rootPart.AssemblyLinearVelocity = Vector3.zero
 		rootPart.AssemblyAngularVelocity = Vector3.zero
+
+		if hasAnyFinderEnabled()
+			and not state.currentTarget
+			and not state.sellActive then
+
+			holdCharacterPosition(rootPart)
+		end
 	end
 end)
 
@@ -1621,8 +2220,7 @@ local function findTargetForMode(mode, origin)
 		)
 	end
 
-	if mode == "CrystalPrice"
-		or mode == "CrystalPriceFly" then
+	if mode == "CrystalPrice" then
 
 		return findCrystalByPrice(
 			origin,
@@ -1652,10 +2250,6 @@ local function countEnabledModes()
 		count += 1
 	end
 
-	if state.crystalPriceFlyEnabled then
-		count += 1
-	end
-
 	return count
 end
 
@@ -1673,8 +2267,290 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 
+	-- ตรวจ Auto Sell
+	if state.autoSellEnabled
+		and not state.sellActive
+		and not state.sellWaitingForSale then
+
+		local now = os.clock()
+
+		if now - state.lastSellCheck
+			>= CONFIG.SellCheckInterval then
+
+			state.lastSellCheck = now
+
+			if isBagFull() then
+				beginSellNavigation()
+				updateButtons()
+			end
+		end
+	end
+
+	-- เมื่อถึงจุดขาย รอ 1 วินาที แล้วใช้ Auto E เดิม
+	-- หลังจากนั้นรอให้ FULL! หาย แล้วกลับจุดเดิม
+	if state.sellWaitingForSale then
+		holdCharacterPosition(rootPart)
+
+		local now = os.clock()
+		local arrivalElapsed =
+			state.sellArrivalStartedAt
+			and (now - state.sellArrivalStartedAt)
+			or 0
+
+		if arrivalElapsed < CONFIG.SellArrivalDelay then
+			statusLabel.Text =
+				"Status: ถึงจุดขายแล้ว รอ Auto E "
+				.. string.format(
+					"%.1f",
+					CONFIG.SellArrivalDelay
+						- arrivalElapsed
+				)
+				.. " วินาที"
+
+			return
+		end
+
+		if not state.sellPromptTriggered then
+			state.sellPromptTriggered = true
+			state.sellPromptTriggeredAt = now
+			state.sellAutoEAllowed = true
+			updateAutoE()
+
+			task.spawn(function()
+				local prompt = getActiveEPrompt()
+
+				if prompt then
+					activateEPrompt(prompt)
+				else
+					warn("Auto Sell: ไม่พบ ProximityPrompt ปุ่ม E")
+				end
+
+				-- กด E เสร็จแล้วปิด Auto E เพื่อไม่ให้กดซ้ำระหว่างเลือกเมนูขาย
+				state.sellAutoEAllowed = false
+				updateAutoE()
+
+				task.wait(CONFIG.SellOptionPressDelay)
+
+				if state.sellWaitingForSale
+					and not state.sellOptionPressed then
+
+					state.sellOptionPressed = true
+					state.sellOptionPressCurrent = 0
+
+					for pressIndex = 1, CONFIG.SellOptionPressCount do
+						if not state.sellWaitingForSale then
+							break
+						end
+
+						state.sellOptionPressCurrent = pressIndex
+						statusLabel.Text =
+							"Status: รอกดตัวเลข | Auto "
+							.. tostring(CONFIG.SellOptionKey)
+							.. " รอบ "
+							.. tostring(pressIndex)
+							.. "/"
+							.. tostring(CONFIG.SellOptionPressCount)
+
+						autoclick(CONFIG.SellOptionKey)
+
+						if pressIndex < CONFIG.SellOptionPressCount then
+							task.wait(CONFIG.SellOptionPressInterval)
+						end
+					end
+				end
+			end)
+
+			statusLabel.Text = "Status: เปิด Auto E ที่จุดขาย"
+			return
+		end
+
+		local promptElapsed =
+			state.sellPromptTriggeredAt
+			and (now - state.sellPromptTriggeredAt)
+			or 0
+
+		if promptElapsed < CONFIG.SellConfirmDelay then
+			statusLabel.Text =
+				"Status: Auto E แล้ว รอ "
+				.. string.format(
+					"%.1f",
+					CONFIG.SellConfirmDelay
+						- promptElapsed
+				)
+				.. " วินาที"
+
+			return
+		end
+
+		statusLabel.Text =
+			state.sellOptionPressed
+			and "Status: กดตัวเลือกขายเลข "
+				.. tostring(CONFIG.SellOptionKey)
+			or "Status: รอกดตัวเลือกขาย"
+
+		if not isBagFull() then
+			if not state.sellCompletedAt then
+				state.sellCompletedAt = now
+			end
+
+			local completedElapsed =
+				now - state.sellCompletedAt
+
+			if completedElapsed
+				>= CONFIG.SellReturnDelay then
+
+				state.sellWaitingForSale = false
+				state.sellActive = true
+				state.sellReturning = true
+				updateButtons()
+			else
+				statusLabel.Text =
+					"Status: ขายสำเร็จ กำลังกลับใน "
+					.. string.format(
+						"%.1f",
+						CONFIG.SellReturnDelay
+							- completedElapsed
+					)
+					.. " วินาที"
+			end
+		else
+			state.sellCompletedAt = nil
+		end
+
+		return
+	end
+
+	-- ให้ Sell Navigation มีลำดับความสำคัญสูงสุด
+	if state.sellActive then
+		local destination
+
+		if state.sellReturning
+			and state.sellStartCFrame then
+
+			destination = state.sellStartCFrame.Position
+		else
+			destination = CONFIG.SellPosition
+		end
+
+		local offset =
+			destination - rootPart.Position
+
+		local distance = offset.Magnitude
+
+		if distance > CONFIG.SellStopDistance then
+			local moveDistance = math.min(
+				distance,
+				CONFIG.SellFlySpeed * deltaTime
+			)
+
+			local nextPosition =
+				rootPart.Position
+				+ offset.Unit * moveDistance
+
+			rootPart.CFrame = getUprightCFrame(
+				nextPosition,
+				offset
+			)
+
+			state.hoverCFrame = rootPart.CFrame
+
+			statusLabel.Text =
+				state.sellReturning
+				and (
+					"Status: กำลังกลับจุดเดิม | "
+					.. string.format("%.1f", distance)
+				)
+				or (
+					"Status: กำลังไปจุดขาย | "
+					.. string.format("%.1f", distance)
+				)
+		else
+			if state.sellReturning then
+				rootPart.CFrame =
+					state.sellStartCFrame
+
+				state.sellActive = false
+				state.sellReturning = false
+				state.sellWaitingForSale = false
+				state.sellArrivalStartedAt = nil
+				state.sellCompletedAt = nil
+				state.sellPromptTriggered = false
+				state.sellPromptTriggeredAt = nil
+				state.sellOptionPressed = false
+				state.sellOptionPressCurrent = 0
+				state.sellAutoEAllowed = false
+
+				-- เปิด Auto E กลับตามสถานะก่อนกด Sell Now/ก่อน Auto Sell เริ่ม
+				local shouldRestoreAutoE =
+					state.sellAutoEWasRunning
+					or hasFinderModeEnabled()
+
+				state.sellAutoEWasRunning = false
+
+				if shouldRestoreAutoE then
+					startAutoE()
+				else
+					updateAutoE()
+				end
+
+				state.hoverCFrame = rootPart.CFrame
+				state.sellStartCFrame = nil
+
+				local shouldKeepFly =
+					state.sellStartedWithFly
+					or hasFinderModeEnabled()
+
+				state.sellStartedWithFly = false
+
+				if shouldKeepFly then
+					updateUtilities()
+				else
+					disableUtilities()
+					stopFly()
+					state.hoverCFrame = nil
+				end
+
+				statusLabel.Text =
+					shouldKeepFly
+					and "Status: ขายสำเร็จ กลับจุดเดิม และคง Fly ไว้"
+					or "Status: ขายสำเร็จ กลับจุดเดิม และปิด Fly แล้ว"
+			else
+				rootPart.CFrame = getUprightCFrame(
+					CONFIG.SellPosition,
+					rootPart.CFrame.LookVector
+				)
+
+				state.hoverCFrame = rootPart.CFrame
+				state.sellActive = false
+				state.sellWaitingForSale = true
+				state.sellArrivalStartedAt = os.clock()
+				state.sellCompletedAt = nil
+				state.sellPromptTriggered = false
+				state.sellPromptTriggeredAt = nil
+				state.sellOptionPressed = false
+				state.sellOptionPressCurrent = 0
+				state.sellAutoEAllowed = false
+				updateAutoE()
+
+				statusLabel.Text =
+					"Status: ถึงจุดขายแล้ว กำลังรอเปิด Auto E"
+			end
+
+			updateButtons()
+		end
+
+		rootPart.AssemblyLinearVelocity =
+			Vector3.zero
+
+		rootPart.AssemblyAngularVelocity =
+			Vector3.zero
+
+		return
+	end
+
 	if countEnabledModes() == 0 then
 		statusLabel.Text = "Status: Ready"
+		state.hoverCFrame = nil
 		clearTarget()
 		return
 	end
@@ -1754,8 +2630,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 					state.currentTargetLuck =
 						extraValue
 
-				elseif nextMode == "CrystalPrice"
-					or nextMode == "CrystalPriceFly" then
+				elseif nextMode == "CrystalPrice" then
 
 					state.currentTargetPrice =
 						extraValue
@@ -1800,33 +2675,16 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			)
 		end
 
-		if state.crystalPriceFlyEnabled then
-			table.insert(
-				enabledNames,
-				"Crystal Price Fly ≥ "
-					.. tostring(state.minimumPrice)
-			)
-		end
-
 		statusLabel.Text =
 			"Status: ไม่พบเป้าหมาย\n"
 			.. table.concat(enabledNames, ", ")
 
+		holdCharacterPosition(rootPart)
 		return
 	end
 
-	local targetPosition
-
-	if state.currentMode == "Boulder" then
-		targetPosition = getObjectBehindPosition(
-			state.currentTarget,
-			CONFIG.BoulderBehindDistance
-		)
-	else
-		targetPosition = getObjectTopPosition(
-			state.currentTarget
-		)
-	end
+	local targetPosition =
+		getObjectTopPosition(state.currentTarget)
 
 	if not targetPosition then
 		clearTarget()
@@ -1842,58 +2700,6 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			.. tostring(
 				state.currentTargetPrice or "?"
 			)
-
-	elseif state.currentMode == "CrystalPriceFly" then
-		local destination =
-			targetPosition
-			+ Vector3.new(
-				0,
-				CONFIG.AboveDistance,
-				0
-			)
-
-		local offset =
-			destination - rootPart.Position
-
-		local distance = offset.Magnitude
-
-		statusLabel.Text =
-			"Mode: Crystal Price Fly"
-			.. "\nTarget: "
-			.. state.currentTarget.Name
-			.. " | Price: "
-			.. tostring(
-				state.currentTargetPrice or "?"
-			)
-			.. " | Distance: "
-			.. string.format("%.1f", distance)
-
-		if distance > CONFIG.CrystalFlyStopDistance then
-			local moveDistance = math.min(
-				distance,
-				CONFIG.CrystalFlySpeed * deltaTime
-			)
-
-			local nextPosition =
-				rootPart.Position
-				+ offset.Unit * moveDistance
-
-			rootPart.CFrame = CFrame.lookAt(
-				nextPosition,
-				destination
-			)
-		else
-			rootPart.CFrame =
-				CFrame.new(destination)
-		end
-
-		rootPart.AssemblyLinearVelocity =
-			Vector3.zero
-
-		rootPart.AssemblyAngularVelocity =
-			Vector3.zero
-
-		return
 
 	elseif state.currentMode == "Crystal" then
 		statusLabel.Text =
@@ -1914,28 +2720,51 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			.. state.currentTarget.Name
 	end
 
-	if state.currentMode == "Boulder" then
-		local objectPosition =
-			getObjectTopPosition(state.currentTarget)
+	statusLabel.Text ..= state.flyToTargetEnabled
+		and "\nMovement: Fly"
+		or "\nMovement: Teleport"
 
-		if objectPosition then
-			rootPart.CFrame = CFrame.lookAt(
-				targetPosition,
-				objectPosition
+	local heightOffset = state.currentMode == "Boulder"
+		and CONFIG.BoulderAboveDistance
+		or CONFIG.AboveDistance
+
+	local destination = targetPosition
+		+ Vector3.new(0, heightOffset, 0)
+
+	if state.flyToTargetEnabled then
+		local offset = destination - rootPart.Position
+		local distance = offset.Magnitude
+
+		if distance > CONFIG.FinderFlyStopDistance then
+			local moveDistance = math.min(
+				distance,
+				CONFIG.FinderFlySpeed * deltaTime
+			)
+
+			local nextPosition = rootPart.Position
+				+ offset.Unit * moveDistance
+
+			rootPart.CFrame = getUprightCFrame(
+				nextPosition,
+				offset
 			)
 		else
-			rootPart.CFrame = CFrame.new(targetPosition)
+			rootPart.CFrame = getUprightCFrame(
+				destination,
+				rootPart.CFrame.LookVector
+			)
 		end
 	else
-		-- โหมดอื่นค้างเหนือ Object
-		rootPart.CFrame = CFrame.new(
-			targetPosition
-				+ Vector3.new(
-					0,
-					CONFIG.AboveDistance,
-					0
-				)
+		rootPart.CFrame = getUprightCFrame(
+			destination,
+			rootPart.CFrame.LookVector
 		)
+	end
+
+	state.hoverCFrame = rootPart.CFrame
+
+	if flyGyro and flyGyro.Parent then
+		flyGyro.CFrame = rootPart.CFrame
 	end
 
 	rootPart.AssemblyLinearVelocity =
