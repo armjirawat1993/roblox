@@ -24,10 +24,6 @@ local CONFIG = {
 	AutoEInterval = 0.01,
 	AutoEHoldTime = 0.01,
 	AutoClickInterval = 0.01,
-	SellOptionKey = 1,
-	SellOptionPressDelay = 0.10,
-	SellOptionPressCount = 4, -- จำนวนรอบกดเลข 1 (ตั้งเป็น 3 หรือ 4 ได้)
-	SellOptionPressInterval = 0.15,
 
 	-- การเคลื่อนที่ของ Finder ทุกโหมด
 	FinderFlySpeed = 130,
@@ -49,6 +45,10 @@ local CONFIG = {
 	SellArrivalDelay = 1.0,
 	SellConfirmDelay = 1.0,
 	SellReturnDelay = 1.0,
+	SellOptionKey = 1,
+	SellOptionPressDelay = 1.0
+	SellOptionPressCount = 4, -- จำนวนรอบกดเลข 1 (ตั้งเป็น 3 หรือ 4 ได้)
+	SellOptionPressInterval = 0.15,
 }
 
 
