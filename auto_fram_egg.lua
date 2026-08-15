@@ -67,9 +67,19 @@ local function getRenderedHideFolders()
 	return folders
 end
 
-local function isInRenderedHideFolder(object)
+local function isInsideDirectRenderedModel(object)
 	for _, targetFolder in ipairs(getRenderedHideFolders()) do
-		if object:IsDescendantOf(targetFolder) then
+		local current = object
+
+		while current and current.Parent ~= targetFolder do
+			current = current.Parent
+		end
+
+		-- รับเฉพาะ Model ที่เป็นลูกโดยตรงของ Folder หลัก
+		if current
+			and current.Parent == targetFolder
+			and current:IsA("Model") then
+
 			return true
 		end
 	end
@@ -79,7 +89,7 @@ end
 
 local function applyRenderedTransparency(object, transparency)
 	if not isTransparencyObject(object)
-		or not isInRenderedHideFolder(object) then
+		or not isInsideDirectRenderedModel(object) then
 
 		return
 	end
@@ -91,11 +101,15 @@ local function setRenderedHidden(enabled)
 	hideRenderedEnabled = enabled
 	local transparency = enabled and 1 or 0
 
-	-- ประมวลผล PlacedEggRenders ทุก Folder ที่ชื่อซ้ำกันใน Workspace
+	-- เลือกเฉพาะ Model ที่เป็นลูกโดยตรง ไม่ค้น Model ใน Folder ซ้อนอีกชั้น
 	for _, targetFolder in ipairs(getRenderedHideFolders()) do
-		for _, object in ipairs(targetFolder:GetDescendants()) do
-			if isTransparencyObject(object) then
-				object.Transparency = transparency
+		for _, model in ipairs(targetFolder:GetChildren()) do
+			if model:IsA("Model") then
+				for _, object in ipairs(model:GetDescendants()) do
+					if isTransparencyObject(object) then
+						object.Transparency = transparency
+					end
+				end
 			end
 		end
 	end
