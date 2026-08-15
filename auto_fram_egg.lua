@@ -16,6 +16,7 @@ local TOGGLE_KEY = Enum.KeyCode.L
 local TELEPORT_TIME = 0.5
 local DELAY_NEXT_ROUND = 1
 local WAIT_BETWEEN_EGGS = 0.1
+local EMPTY_CONFIRM_TIME = 1.5
 
 -- ขอบเขต Zone ใช้ค่าแกน X จาก Position จุดเริ่มและจุดสิ้นสุด
 local ZONES = {
@@ -38,10 +39,67 @@ end
 local running = false
 local runToken = 0
 local minimized = false
-local guiVisible = true
 local scriptClosed = false
 local promptData = {}
 local eggHighlights = {}
+local hideRenderedEnabled = false
+local originalTransparency = setmetatable({}, {__mode = "k"})
+
+local function isTransparencyObject(object)
+	return object:IsA("BasePart")
+		or object:IsA("Decal")
+		or object:IsA("Texture")
+end
+
+local function isInRenderedHideFolder(object)
+	local clientAssets = Workspace:FindFirstChild("ClientRenderedAssets")
+	local placedEggs = Workspace:FindFirstChild("PlacedEggRenders")
+
+	return (clientAssets and object:IsDescendantOf(clientAssets))
+		or (placedEggs and object:IsDescendantOf(placedEggs))
+end
+
+local function hideRenderedObject(object)
+	if not hideRenderedEnabled
+		or not isTransparencyObject(object)
+		or not isInRenderedHideFolder(object) then
+
+		return
+	end
+
+	if originalTransparency[object] == nil then
+		originalTransparency[object] = object.Transparency
+	end
+	object.Transparency = 1
+end
+
+local function setRenderedHidden(enabled)
+	hideRenderedEnabled = enabled
+
+	if enabled then
+		for _, folderName in ipairs({"ClientRenderedAssets", "PlacedEggRenders"}) do
+			local targetFolder = Workspace:FindFirstChild(folderName)
+			if targetFolder then
+				for _, object in ipairs(targetFolder:GetDescendants()) do
+					hideRenderedObject(object)
+				end
+			end
+		end
+	else
+		for object, transparency in pairs(originalTransparency) do
+			if object.Parent then
+				object.Transparency = transparency
+			end
+			originalTransparency[object] = nil
+		end
+	end
+end
+
+Workspace.DescendantAdded:Connect(function(object)
+	if hideRenderedEnabled then
+		task.defer(hideRenderedObject, object)
+	end
+end)
 
 local function getObjectPosition(object)
 	if object:IsA("Model") then
@@ -250,6 +308,17 @@ task.spawn(function()
 				makePromptInstant(object)
 			end
 		end
+
+		if hideRenderedEnabled then
+			for _, folderName in ipairs({"ClientRenderedAssets", "PlacedEggRenders"}) do
+				local targetFolder = Workspace:FindFirstChild(folderName)
+				if targetFolder then
+					for _, object in ipairs(targetFolder:GetDescendants()) do
+						hideRenderedObject(object)
+					end
+				end
+			end
+		end
 		task.wait(0.1)
 	end
 end)
@@ -289,8 +358,8 @@ logoGradient.Parent = logoButton
 
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.fromOffset(330, 215)
-main.Position = UDim2.new(0.5, -165, 0.5, -107)
+main.Size = UDim2.fromOffset(330, 260)
+main.Position = UDim2.new(0.5, -165, 0.5, -130)
 main.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
 main.BorderSizePixel = 0
 main.Active = true
@@ -398,7 +467,7 @@ keyLabel.Size = UDim2.new(1, 0, 0, 23)
 keyLabel.Position = UDim2.fromOffset(0, 80)
 keyLabel.BackgroundTransparency = 1
 keyLabel.Font = Enum.Font.Gotham
-keyLabel.Text = "L = ซ่อน / แสดงหน้าต่าง"
+keyLabel.Text = "L = พับเป็น Logo / เปิดหน้าต่าง"
 keyLabel.TextColor3 = Color3.fromRGB(105, 150, 245)
 keyLabel.TextSize = 12
 keyLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -416,6 +485,20 @@ zoneButton.Parent = content
 local zoneButtonCorner = Instance.new("UICorner")
 zoneButtonCorner.CornerRadius = UDim.new(0, 8)
 zoneButtonCorner.Parent = zoneButton
+
+local hideRenderedButton = Instance.new("TextButton")
+hideRenderedButton.Size = UDim2.new(1, 0, 0, 38)
+hideRenderedButton.Position = UDim2.fromOffset(0, 155)
+hideRenderedButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
+hideRenderedButton.Font = Enum.Font.GothamBold
+hideRenderedButton.Text = "ซ่อนสัตว์และไข่: OFF"
+hideRenderedButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+hideRenderedButton.TextSize = 14
+hideRenderedButton.Parent = content
+
+local hideRenderedCorner = Instance.new("UICorner")
+hideRenderedCorner.CornerRadius = UDim.new(0, 8)
+hideRenderedCorner.Parent = hideRenderedButton
 
 local zonePanel = Instance.new("Frame")
 zonePanel.Name = "ZonePanel"
@@ -585,19 +668,17 @@ local function collectEgg(egg, index, token, rootPart, originalCFrame)
 	end
 
 	local eggCFrame
-	local eggSize
 
 	if egg:IsA("Model") then
-		eggCFrame, eggSize = egg:GetBoundingBox()
+		eggCFrame = egg:GetBoundingBox()
 	elseif egg:IsA("BasePart") then
 		eggCFrame = egg.CFrame
-		eggSize = egg.Size
 	else
 		return false
 	end
 
-	local frontPosition = (eggCFrame * CFrame.new(0, 0, -(eggSize.Z / 2 + 1))).Position
-	local teleportCFrame = CFrame.lookAt(frontPosition, eggCFrame.Position)
+	-- วาร์ปเข้าศูนย์กลางไข่โดยตรง ป้องกันไข่ใหญ่ดันตัวออกนอกแมพ
+	local teleportCFrame = CFrame.new(eggCFrame.Position)
 	local prompts = {}
 
 	for _, object in ipairs(egg:GetDescendants()) do
@@ -693,15 +774,7 @@ local function getHitboxVolume(egg)
 	return size.X * size.Y * size.Z
 end
 
-local function startCollecting()
-	local selectedZoneCount = countSelectedZones()
-	if selectedZoneCount == 0 then
-		statusLabel.Text = "สถานะ: กรุณาเลือกอย่างน้อย 1 Zone"
-		return
-	end
-
-	local _, rootPart = getCharacterParts()
-	local originalCFrame = rootPart.CFrame
+local function getSortedSelectedEggs()
 	local eggs = {}
 	local eggsByZone = {}
 	local eggSortData = {}
@@ -725,7 +798,7 @@ local function startCollecting()
 		end
 	end
 
-	-- ภายในแต่ละ Zone เรียง Hitbox จากปริมาตรใหญ่ที่สุดไปเล็กที่สุด
+	-- ภายในแต่ละ Zone เรียง Hitbox จากใหญ่ที่สุดไปเล็กที่สุด
 	for _, zone in ipairs(ZONES) do
 		table.sort(eggsByZone[zone.Name], function(eggA, eggB)
 			local dataA = eggSortData[eggA]
@@ -749,15 +822,30 @@ local function startCollecting()
 		end
 	end
 
+	return eggs
+end
+
+local function startCollecting()
+	local selectedZoneCount = countSelectedZones()
+	if selectedZoneCount == 0 then
+		statusLabel.Text = "สถานะ: กรุณาเลือกอย่างน้อย 1 Zone"
+		return
+	end
+
+	local _, rootPart = getCharacterParts()
+	local originalCFrame = rootPart.CFrame
+	local eggs = getSortedSelectedEggs()
+
 	if #eggs == 0 then
 		statusLabel.Text = "สถานะ: ไม่พบไข่ใน Zone ที่เลือก"
 		return
 	end
 
-	local amountToCollect = #eggs
 	running = true
 	runToken += 1
 	local token = runToken
+	local collectedCount = 0
+	local completedBecauseEmpty = false
 	updateRunningUI()
 	statusLabel.Text = string.format(
 		"สถานะ: พบ %d ใบใน %d Zone",
@@ -766,36 +854,60 @@ local function startCollecting()
 	)
 
 	task.spawn(function()
-		for index = 1, amountToCollect do
-			if not running or token ~= runToken then
+		while running and token == runToken do
+			if not rootPart.Parent then
+				statusLabel.Text = "สถานะ: ตัวละครหาย หยุดเก็บไข่"
 				break
 			end
 
+			-- สแกนใหม่ทุกครั้ง ป้องกันรายการเดิมหมดอายุเมื่อไข่ถูกลบ/สร้างใหม่
+			eggs = getSortedSelectedEggs()
+
+			if #eggs == 0 then
+				statusLabel.Text = "สถานะ: กำลังตรวจยืนยันว่าไข่หมด..."
+				local emptyStart = os.clock()
+				local foundNewEgg = false
+
+				while running
+					and token == runToken
+					and os.clock() - emptyStart < EMPTY_CONFIRM_TIME do
+
+					task.wait(0.15)
+					if #getSortedSelectedEggs() > 0 then
+						foundNewEgg = true
+						break
+					end
+				end
+
+				if not foundNewEgg then
+					completedBecauseEmpty = true
+					break
+				end
+				continue
+			end
+
+			local egg = eggs[1]
 			local collected = collectEgg(
-				eggs[index],
-				index,
+				egg,
+				collectedCount + 1,
 				token,
 				rootPart,
 				originalCFrame
 			)
 
-			if not collected then
-				break
+			if collected then
+				collectedCount += 1
+			else
+				-- Object อาจถูกผู้เล่นอื่นเก็บก่อน ให้ข้ามและสแกนใหม่
+				task.wait(0.05)
 			end
 
-			if index < amountToCollect then
-				statusLabel.Text = string.format(
-					"สถานะ: จบรอบ %d/%d พัก %.1f วินาที",
-					index,
-					amountToCollect,
-					DELAY_NEXT_ROUND
-				)
-
+			if running and token == runToken then
 				local delayStart = os.clock()
-				while running and token == runToken and os.clock() - delayStart < DELAY_NEXT_ROUND do
-					if not rootPart.Parent then
-						break
-					end
+				while running
+					and token == runToken
+					and os.clock() - delayStart < DELAY_NEXT_ROUND do
+
 					rootPart.CFrame = originalCFrame
 					task.wait(0.05)
 				end
@@ -807,7 +919,12 @@ local function startCollecting()
 		if token == runToken then
 			running = false
 			updateRunningUI()
-			statusLabel.Text = string.format("สถานะ: เก็บครบแล้ว %d ใบ", amountToCollect)
+			if completedBecauseEmpty then
+				statusLabel.Text = string.format(
+					"สถานะ: ไข่ใน Zone ที่เลือกหมดแล้ว เก็บ %d รอบ",
+					collectedCount
+				)
+			end
 		end
 	end)
 end
@@ -820,24 +937,48 @@ toggleButton.MouseButton1Click:Connect(function()
 	end
 end)
 
-minimizeButton.MouseButton1Click:Connect(function()
+hideRenderedButton.MouseButton1Click:Connect(function()
+	setRenderedHidden(not hideRenderedEnabled)
+
+	if hideRenderedEnabled then
+		hideRenderedButton.Text = "ซ่อนสัตว์และไข่: ON"
+		hideRenderedButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
+	else
+		hideRenderedButton.Text = "ซ่อนสัตว์และไข่: OFF"
+		hideRenderedButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
+	end
+end)
+
+local function minimizeToLogo()
+	if minimized then
+		return
+	end
+
 	minimized = true
 	zonePanel.Visible = false
 	logoButton.Position = main.Position
 	main.Visible = false
-	logoButton.Visible = guiVisible
-end)
+	logoButton.Visible = true
+end
 
-logoButton.MouseButton1Click:Connect(function()
+local function restoreFromLogo()
+	if not minimized then
+		return
+	end
+
 	minimized = false
 	main.Position = logoButton.Position
 	logoButton.Visible = false
-	main.Visible = guiVisible
-end)
+	main.Visible = true
+end
+
+minimizeButton.MouseButton1Click:Connect(minimizeToLogo)
+logoButton.MouseButton1Click:Connect(restoreFromLogo)
 
 closeButton.MouseButton1Click:Connect(function()
 	scriptClosed = true
 	stopCollecting("สถานะ: ปิดโปรแกรม")
+	setRenderedHidden(false)
 
 	for egg in pairs(eggHighlights) do
 		removeEggESP(egg)
@@ -862,13 +1003,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 
 	if input.KeyCode == TOGGLE_KEY and screenGui.Parent then
-		guiVisible = not guiVisible
 		if minimized then
-			logoButton.Visible = guiVisible
-			main.Visible = false
+			restoreFromLogo()
 		else
-			main.Visible = guiVisible
-			logoButton.Visible = false
+			minimizeToLogo()
 		end
 	end
 end)
