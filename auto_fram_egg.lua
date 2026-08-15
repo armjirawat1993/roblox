@@ -43,6 +43,8 @@ local scriptClosed = false
 local promptData = {}
 local eggHighlights = {}
 local hideRenderedEnabled = false
+local selectedSizeThreshold = 0
+local autoFarmEnabled = false
 local originalTransparency = setmetatable({}, {__mode = "k"})
 
 local function isTransparencyObject(object)
@@ -358,8 +360,8 @@ logoGradient.Parent = logoButton
 
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.fromOffset(330, 260)
-main.Position = UDim2.new(0.5, -165, 0.5, -130)
+main.Size = UDim2.fromOffset(330, 305)
+main.Position = UDim2.new(0.5, -165, 0.5, -152)
 main.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
 main.BorderSizePixel = 0
 main.Active = true
@@ -438,13 +440,13 @@ content.BackgroundTransparency = 1
 content.Parent = main
 
 local toggleButton = Instance.new("TextButton")
-toggleButton.Size = UDim2.new(1, 0, 0, 42)
+toggleButton.Size = UDim2.new(0.5, -4, 0, 42)
 toggleButton.Position = UDim2.fromOffset(0, 0)
 toggleButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
 toggleButton.Font = Enum.Font.GothamBold
-toggleButton.Text = "เริ่มหาและเก็บไข่"
+toggleButton.Text = "เริ่มเก็บ"
 toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-toggleButton.TextSize = 15
+toggleButton.TextSize = 14
 toggleButton.Parent = content
 
 local toggleCorner = Instance.new("UICorner")
@@ -499,6 +501,106 @@ hideRenderedButton.Parent = content
 local hideRenderedCorner = Instance.new("UICorner")
 hideRenderedCorner.CornerRadius = UDim.new(0, 8)
 hideRenderedCorner.Parent = hideRenderedButton
+
+local sizeFilterButton = Instance.new("TextButton")
+sizeFilterButton.Size = UDim2.new(1, 0, 0, 38)
+sizeFilterButton.Position = UDim2.fromOffset(0, 200)
+sizeFilterButton.BackgroundColor3 = Color3.fromRGB(110, 75, 175)
+sizeFilterButton.Font = Enum.Font.GothamBold
+sizeFilterButton.Text = "Filter Hitbox Size: > 0"
+sizeFilterButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+sizeFilterButton.TextSize = 14
+sizeFilterButton.Parent = content
+
+local sizeFilterCorner = Instance.new("UICorner")
+sizeFilterCorner.CornerRadius = UDim.new(0, 8)
+sizeFilterCorner.Parent = sizeFilterButton
+
+local autoFarmButton = Instance.new("TextButton")
+autoFarmButton.Size = UDim2.new(0.5, -4, 0, 42)
+autoFarmButton.Position = UDim2.new(0.5, 4, 0, 0)
+autoFarmButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
+autoFarmButton.Font = Enum.Font.GothamBold
+autoFarmButton.Text = "Auto Farm: OFF"
+autoFarmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoFarmButton.TextSize = 14
+autoFarmButton.Parent = content
+
+local autoFarmCorner = Instance.new("UICorner")
+autoFarmCorner.CornerRadius = UDim.new(0, 8)
+autoFarmCorner.Parent = autoFarmButton
+
+local sizeFilterPanel = Instance.new("Frame")
+sizeFilterPanel.Name = "SizeFilterPanel"
+sizeFilterPanel.Size = UDim2.fromOffset(150, 184)
+sizeFilterPanel.Position = UDim2.new(0, -160, 0, 110)
+sizeFilterPanel.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
+sizeFilterPanel.BorderSizePixel = 0
+sizeFilterPanel.Visible = false
+sizeFilterPanel.Parent = main
+
+local sizePanelCorner = Instance.new("UICorner")
+sizePanelCorner.CornerRadius = UDim.new(0, 10)
+sizePanelCorner.Parent = sizeFilterPanel
+
+local sizePanelStroke = Instance.new("UIStroke")
+sizePanelStroke.Color = Color3.fromRGB(165, 100, 235)
+sizePanelStroke.Thickness = 1.5
+sizePanelStroke.Parent = sizeFilterPanel
+
+local sizeTitle = Instance.new("TextLabel")
+sizeTitle.Size = UDim2.new(1, 0, 0, 34)
+sizeTitle.BackgroundTransparency = 1
+sizeTitle.Font = Enum.Font.GothamBold
+sizeTitle.Text = "เลือกขนาดไข่"
+sizeTitle.TextColor3 = Color3.fromRGB(240, 244, 255)
+sizeTitle.TextSize = 13
+sizeTitle.Parent = sizeFilterPanel
+
+local sizeOptionButtons = {}
+
+local function refreshSizeFilterUI()
+	sizeFilterButton.Text = string.format(
+		"Filter Hitbox Size: > %d",
+		selectedSizeThreshold
+	)
+
+	for threshold, button in pairs(sizeOptionButtons) do
+		local selected = threshold == selectedSizeThreshold
+		button.Text = (selected and "[✓] " or "[ ] ") .. "> " .. threshold
+		button.BackgroundColor3 = selected
+			and Color3.fromRGB(105, 65, 165)
+			or Color3.fromRGB(48, 53, 65)
+	end
+end
+
+for index, threshold in ipairs({0, 1, 2, 3}) do
+	local option = Instance.new("TextButton")
+	option.Size = UDim2.new(1, -12, 0, 31)
+	option.Position = UDim2.fromOffset(6, 35 + (index - 1) * 36)
+	option.BorderSizePixel = 0
+	option.Font = Enum.Font.GothamMedium
+	option.TextColor3 = Color3.fromRGB(255, 255, 255)
+	option.TextSize = 13
+	option.Parent = sizeFilterPanel
+
+	local optionCorner = Instance.new("UICorner")
+	optionCorner.CornerRadius = UDim.new(0, 6)
+	optionCorner.Parent = option
+
+	sizeOptionButtons[threshold] = option
+	option.MouseButton1Click:Connect(function()
+		selectedSizeThreshold = threshold
+		sizeFilterPanel.Visible = false
+		refreshSizeFilterUI()
+	end)
+end
+
+sizeFilterButton.MouseButton1Click:Connect(function()
+	sizeFilterPanel.Visible = not sizeFilterPanel.Visible
+end)
+
+refreshSizeFilterUI()
 
 local zonePanel = Instance.new("Frame")
 zonePanel.Name = "ZonePanel"
@@ -621,6 +723,7 @@ end
 
 zoneButton.MouseButton1Click:Connect(function()
 	zonePanel.Visible = not zonePanel.Visible
+	sizeFilterPanel.Visible = false
 end)
 
 selectAllButton.MouseButton1Click:Connect(function()
@@ -641,11 +744,21 @@ refreshZoneUI()
 
 local function updateRunningUI()
 	if running then
-		toggleButton.Text = "หยุดเก็บไข่"
+		toggleButton.Text = "หยุดเก็บ"
 		toggleButton.BackgroundColor3 = Color3.fromRGB(200, 65, 75)
 	else
-		toggleButton.Text = "เริ่มหาและเก็บไข่"
+		toggleButton.Text = "เริ่มเก็บ"
 		toggleButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
+	end
+end
+
+local function updateAutoFarmUI()
+	if autoFarmEnabled then
+		autoFarmButton.Text = "Auto Farm: ON"
+		autoFarmButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
+	else
+		autoFarmButton.Text = "Auto Farm: OFF"
+		autoFarmButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
 	end
 end
 
@@ -764,81 +877,76 @@ local function findEggHitbox(egg)
 	return nil
 end
 
-local function getHitboxVolume(egg)
+local function getHitboxSizeData(egg)
 	local hitbox = findEggHitbox(egg)
 	if not hitbox then
-		return 0
+		return 0, 0
 	end
 
 	local size = hitbox.Size
-	return size.X * size.Y * size.Z
+	local maxSize = math.max(size.X, size.Y, size.Z)
+	local volume = size.X * size.Y * size.Z
+	return maxSize, volume
 end
 
 local function getSortedSelectedEggs()
 	local eggs = {}
-	local eggsByZone = {}
 	local eggSortData = {}
 	local originalIndex = 0
-
-	for _, zone in ipairs(ZONES) do
-		eggsByZone[zone.Name] = {}
-	end
 
 	for _, object in ipairs(folder:GetChildren()) do
 		if object:IsA("Model") or object:IsA("BasePart") then
 			originalIndex += 1
 			local zone = getObjectZone(object)
 			if zone and selectedZones[zone.Name] then
-				eggSortData[object] = {
-					Volume = getHitboxVolume(object),
-					OriginalIndex = originalIndex,
-				}
-				table.insert(eggsByZone[zone.Name], object)
+				local maxSize, volume = getHitboxSizeData(object)
+				if maxSize > selectedSizeThreshold then
+					eggSortData[object] = {
+						MaxSize = maxSize,
+						Volume = volume,
+						OriginalIndex = originalIndex,
+					}
+					table.insert(eggs, object)
+				end
 			end
 		end
 	end
 
-	-- ภายในแต่ละ Zone เรียง Hitbox จากใหญ่ที่สุดไปเล็กที่สุด
-	for _, zone in ipairs(ZONES) do
-		table.sort(eggsByZone[zone.Name], function(eggA, eggB)
-			local dataA = eggSortData[eggA]
-			local dataB = eggSortData[eggB]
 
-			if dataA.Volume == dataB.Volume then
-				return dataA.OriginalIndex < dataB.OriginalIndex
-			end
+	-- รวมไข่จากทุก Zone ที่เลือก แล้วเรียง Size ใหญ่ที่สุดก่อนแบบ Global
+	table.sort(eggs, function(eggA, eggB)
+		local dataA = eggSortData[eggA]
+		local dataB = eggSortData[eggB]
 
+		if dataA.MaxSize ~= dataB.MaxSize then
+			return dataA.MaxSize > dataB.MaxSize
+		end
+		if dataA.Volume ~= dataB.Volume then
 			return dataA.Volume > dataB.Volume
-		end)
-	end
-
-	-- เริ่มจาก Zone หลังสุด: Cosmic -> Prehistoric -> ... -> First Zone
-	for zoneIndex = #ZONES, 1, -1 do
-		local zone = ZONES[zoneIndex]
-		if selectedZones[zone.Name] then
-			for _, egg in ipairs(eggsByZone[zone.Name]) do
-				table.insert(eggs, egg)
-			end
 		end
-	end
+		return dataA.OriginalIndex < dataB.OriginalIndex
+	end)
 
 	return eggs
 end
 
-local function startCollecting()
+local function startCollecting(continuousMode)
 	local selectedZoneCount = countSelectedZones()
 	if selectedZoneCount == 0 then
 		statusLabel.Text = "สถานะ: กรุณาเลือกอย่างน้อย 1 Zone"
-		return
+		return false
 	end
 
 	local _, rootPart = getCharacterParts()
 	local originalCFrame = rootPart.CFrame
 	local eggs = getSortedSelectedEggs()
 
-	if #eggs == 0 then
-		statusLabel.Text = "สถานะ: ไม่พบไข่ใน Zone ที่เลือก"
-		return
+	if #eggs == 0 and not continuousMode then
+		statusLabel.Text = string.format(
+			"สถานะ: ไม่พบไข่ Size > %d ใน Zone ที่เลือก",
+			selectedSizeThreshold
+		)
+		return false
 	end
 
 	running = true
@@ -847,11 +955,16 @@ local function startCollecting()
 	local collectedCount = 0
 	local completedBecauseEmpty = false
 	updateRunningUI()
-	statusLabel.Text = string.format(
-		"สถานะ: พบ %d ใบใน %d Zone",
-		#eggs,
-		selectedZoneCount
-	)
+	if #eggs > 0 then
+		statusLabel.Text = string.format(
+			"สถานะ: พบ %d ใบ | %d Zone | Size > %d",
+			#eggs,
+			selectedZoneCount,
+			selectedSizeThreshold
+		)
+	else
+		statusLabel.Text = "สถานะ: Auto Farm รอไข่เกิดใหม่..."
+	end
 
 	task.spawn(function()
 		while running and token == runToken do
@@ -864,6 +977,15 @@ local function startCollecting()
 			eggs = getSortedSelectedEggs()
 
 			if #eggs == 0 then
+				if continuousMode then
+					statusLabel.Text = string.format(
+						"สถานะ: Auto Farm รอไข่ Size > %d...",
+						selectedSizeThreshold
+					)
+					task.wait(0.25)
+					continue
+				end
+
 				statusLabel.Text = "สถานะ: กำลังตรวจยืนยันว่าไข่หมด..."
 				local emptyStart = os.clock()
 				local foundNewEgg = false
@@ -918,6 +1040,10 @@ local function startCollecting()
 
 		if token == runToken then
 			running = false
+			if continuousMode then
+				autoFarmEnabled = false
+				updateAutoFarmUI()
+			end
 			updateRunningUI()
 			if completedBecauseEmpty then
 				statusLabel.Text = string.format(
@@ -927,13 +1053,38 @@ local function startCollecting()
 			end
 		end
 	end)
+
+	return true
 end
 
 toggleButton.MouseButton1Click:Connect(function()
 	if running then
+		autoFarmEnabled = false
+		updateAutoFarmUI()
 		stopCollecting("สถานะ: หยุดโดยผู้ใช้")
 	else
-		startCollecting()
+		startCollecting(false)
+	end
+end)
+
+autoFarmButton.MouseButton1Click:Connect(function()
+	if autoFarmEnabled then
+		autoFarmEnabled = false
+		updateAutoFarmUI()
+		stopCollecting("สถานะ: ปิด Auto Farm")
+		return
+	end
+
+	if running then
+		stopCollecting("สถานะ: เปลี่ยนเป็น Auto Farm")
+	end
+
+	autoFarmEnabled = true
+	updateAutoFarmUI()
+
+	if not startCollecting(true) then
+		autoFarmEnabled = false
+		updateAutoFarmUI()
 	end
 end)
 
@@ -956,6 +1107,7 @@ local function minimizeToLogo()
 
 	minimized = true
 	zonePanel.Visible = false
+	sizeFilterPanel.Visible = false
 	logoButton.Position = main.Position
 	main.Visible = false
 	logoButton.Visible = true
@@ -977,6 +1129,7 @@ logoButton.MouseButton1Click:Connect(restoreFromLogo)
 
 closeButton.MouseButton1Click:Connect(function()
 	scriptClosed = true
+	autoFarmEnabled = false
 	stopCollecting("สถานะ: ปิดโปรแกรม")
 	setRenderedHidden(false)
 
@@ -1012,3 +1165,4 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 updateRunningUI()
+updateAutoFarmUI()
