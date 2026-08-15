@@ -532,7 +532,7 @@ autoFarmCorner.Parent = autoFarmButton
 
 local sizeFilterPanel = Instance.new("Frame")
 sizeFilterPanel.Name = "SizeFilterPanel"
-sizeFilterPanel.Size = UDim2.fromOffset(150, 184)
+sizeFilterPanel.Size = UDim2.fromOffset(150, 256)
 sizeFilterPanel.Position = UDim2.new(0, -160, 0, 110)
 sizeFilterPanel.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
 sizeFilterPanel.BorderSizePixel = 0
@@ -561,7 +561,7 @@ local sizeOptionButtons = {}
 
 local function refreshSizeFilterUI()
 	sizeFilterButton.Text = string.format(
-		"Filter Hitbox Size: > %d",
+		"Filter Hitbox Size: > %g",
 		selectedSizeThreshold
 	)
 
@@ -574,7 +574,7 @@ local function refreshSizeFilterUI()
 	end
 end
 
-for index, threshold in ipairs({0, 1, 2, 3}) do
+for index, threshold in ipairs({0, 1, 1.5, 2, 2.5, 3}) do
 	local option = Instance.new("TextButton")
 	option.Size = UDim2.new(1, -12, 0, 31)
 	option.Position = UDim2.fromOffset(6, 35 + (index - 1) * 36)
@@ -943,7 +943,7 @@ local function startCollecting(continuousMode)
 
 	if #eggs == 0 and not continuousMode then
 		statusLabel.Text = string.format(
-			"สถานะ: ไม่พบไข่ Size > %d ใน Zone ที่เลือก",
+			"สถานะ: ไม่พบไข่ Size > %g ใน Zone ที่เลือก",
 			selectedSizeThreshold
 		)
 		return false
@@ -957,7 +957,7 @@ local function startCollecting(continuousMode)
 	updateRunningUI()
 	if #eggs > 0 then
 		statusLabel.Text = string.format(
-			"สถานะ: พบ %d ใบ | %d Zone | Size > %d",
+			"สถานะ: พบ %d ใบ | %d Zone | Size > %g",
 			#eggs,
 			selectedZoneCount,
 			selectedSizeThreshold
@@ -979,7 +979,7 @@ local function startCollecting(continuousMode)
 			if #eggs == 0 then
 				if continuousMode then
 					statusLabel.Text = string.format(
-						"สถานะ: Auto Farm รอไข่ Size > %d...",
+						"สถานะ: Auto Farm รอไข่ Size > %g...",
 						selectedSizeThreshold
 					)
 					task.wait(0.25)
