@@ -5,6 +5,8 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local ProximityPromptService = game:GetService("ProximityPromptService")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -15,10 +17,57 @@ local TELEPORT_TIME = 0.5
 local DELAY_NEXT_ROUND = 1
 local WAIT_BETWEEN_EGGS = 0.1
 
+-- ขอบเขต Zone ใช้ค่าแกน X จาก Position จุดเริ่มและจุดสิ้นสุด
+local ZONES = {
+	{Name = "First Zone", MinX = 576.90, MaxX = 619.76, Color = Color3.fromRGB(255, 230, 70)},
+	{Name = "Lake", MinX = 703.63, MaxX = 772.56, Color = Color3.fromRGB(40, 170, 255)},
+	{Name = "Desert", MinX = 895.85, MaxX = 966.46, Color = Color3.fromRGB(255, 145, 45)},
+	{Name = "Jungle", MinX = 1145.36, MaxX = 1207.19, Color = Color3.fromRGB(45, 220, 90)},
+	{Name = "Snow", MinX = 1422.21, MaxX = 1526.41, Color = Color3.fromRGB(190, 240, 255)},
+	{Name = "Volcano", MinX = 1789.88, MaxX = 1920.64, Color = Color3.fromRGB(255, 55, 45)},
+	{Name = "Abyss Ocean", MinX = 2195.42, MaxX = 2340.19, Color = Color3.fromRGB(35, 65, 210)},
+	{Name = "Prehistoric", MinX = 2709.03, MaxX = 2840.94, Color = Color3.fromRGB(180, 90, 255)},
+	{Name = "Cosmic", MinX = 3289.73, MaxX = 3456.04, Color = Color3.fromRGB(255, 70, 210)},
+}
+
+local selectedZones = {}
+for _, zone in ipairs(ZONES) do
+	selectedZones[zone.Name] = true
+end
+
 local running = false
 local runToken = 0
 local minimized = false
 local guiVisible = true
+local scriptClosed = false
+local promptData = {}
+local eggHighlights = {}
+
+local function getObjectPosition(object)
+	if object:IsA("Model") then
+		return object:GetPivot().Position
+	elseif object:IsA("BasePart") then
+		return object.Position
+	end
+	return nil
+end
+
+local function getObjectZone(object)
+	local position = getObjectPosition(object)
+	if not position then
+		return nil
+	end
+
+	for _, zone in ipairs(ZONES) do
+		local minX = math.min(zone.MinX, zone.MaxX)
+		local maxX = math.max(zone.MinX, zone.MaxX)
+		if position.X >= minX and position.X <= maxX then
+			return zone
+		end
+	end
+
+	return nil
+end
 
 local oldGui = playerGui:FindFirstChild("EggCollectorGUI")
 if oldGui then
@@ -41,15 +90,82 @@ local function makePromptInstant(prompt)
 	prompt.MaxActivationDistance = math.max(prompt.MaxActivationDistance, 15)
 end
 
-for _, object in ipairs(folder:GetDescendants()) do
+local function setupPrompt(prompt)
+	if scriptClosed or not prompt:IsA("ProximityPrompt") or promptData[prompt] then
+		return
+	end
+
+	local data = {}
+	promptData[prompt] = data
+	makePromptInstant(prompt)
+
+	data.HoldConnection = prompt:GetPropertyChangedSignal("HoldDuration"):Connect(function()
+		if not scriptClosed and prompt.Parent and prompt.HoldDuration ~= 0 then
+			prompt.HoldDuration = 0
+		end
+	end)
+
+	data.DestroyConnection = prompt.Destroying:Connect(function()
+		local currentData = promptData[prompt]
+		if currentData then
+			if currentData.HoldConnection then
+				currentData.HoldConnection:Disconnect()
+			end
+			if currentData.DestroyConnection then
+				currentData.DestroyConnection:Disconnect()
+			end
+			promptData[prompt] = nil
+		end
+	end)
+end
+
+local activePromptTriggers = setmetatable({}, {__mode = "k"})
+
+local function triggerPromptInstant(prompt)
+	if not prompt or not prompt.Parent or not prompt.Enabled then
+		return
+	end
+	if activePromptTriggers[prompt] then
+		return
+	end
+
+	activePromptTriggers[prompt] = true
+
+	makePromptInstant(prompt)
+
+	if fireproximityprompt then
+		-- รูปแบบ argument ที่ 3 ช่วยข้ามการจำลองเวลาค้าง
+		local success = pcall(function()
+			fireproximityprompt(prompt, 0, true)
+		end)
+
+		if not success then
+			pcall(function()
+				fireproximityprompt(prompt, 0)
+			end)
+		end
+	else
+		-- Fallback กรณี executor ไม่มี fireproximityprompt
+		pcall(function()
+			prompt:InputHoldBegin()
+			task.wait()
+			prompt:InputHoldEnd()
+		end)
+	end
+
+	activePromptTriggers[prompt] = nil
+end
+
+-- ใช้ Instant Prompt แบบเดียวกับ Main_world.lua และครอบคลุมทั้ง Workspace
+for _, object in ipairs(Workspace:GetDescendants()) do
 	if object:IsA("ProximityPrompt") then
-		makePromptInstant(object)
+		setupPrompt(object)
 	end
 end
 
-folder.DescendantAdded:Connect(function(object)
+Workspace.DescendantAdded:Connect(function(object)
 	if object:IsA("ProximityPrompt") then
-		task.defer(makePromptInstant, object)
+		task.defer(setupPrompt, object)
 	end
 end)
 
@@ -59,16 +175,122 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	end
 end)
 
+-- เมื่อผู้เล่นเริ่มกด E ให้จบ Prompt ทันทีโดยไม่ต้องรอวงโหลด
+ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt)
+	if prompt:IsDescendantOf(folder) then
+		task.defer(triggerPromptInstant, prompt)
+	end
+end)
+
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "EggCollectorGUI"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = playerGui
 
+local function removeEggESP(egg)
+	local highlight = eggHighlights[egg]
+	if highlight then
+		highlight:Destroy()
+		eggHighlights[egg] = nil
+	end
+	if egg and egg.Parent then
+		local existing = egg:FindFirstChild("EggZoneESP")
+		if existing and existing:IsA("Highlight") then
+			existing:Destroy()
+		end
+	end
+end
+
+local function addEggESP(egg)
+	if not egg or not egg.Parent then
+		return
+	end
+	if not egg:IsA("Model") and not egg:IsA("BasePart") then
+		return
+	end
+
+	local zone = getObjectZone(egg)
+	if not zone then
+		removeEggESP(egg)
+		return
+	end
+
+	removeEggESP(egg)
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "EggZoneESP"
+	highlight.Adornee = egg
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.FillColor = zone.Color
+	highlight.OutlineColor = zone.Color
+	highlight.FillTransparency = 0.45
+	highlight.OutlineTransparency = 0
+	highlight.Parent = egg
+	eggHighlights[egg] = highlight
+end
+
+-- เปิด ESP ไข่ทั้งหมดทันทีเมื่อรัน โดยแต่ละ Zone ใช้คนละสี
+for _, object in ipairs(folder:GetChildren()) do
+	addEggESP(object)
+end
+
+folder.ChildAdded:Connect(function(object)
+	task.defer(addEggESP, object)
+end)
+
+folder.ChildRemoved:Connect(function(object)
+	removeEggESP(object)
+end)
+
+-- บางเกมเขียน HoldDuration กลับ จึงบังคับ Instant ตลอดเวลาที่ GUI ทำงาน
+task.spawn(function()
+	while screenGui.Parent do
+		for _, object in ipairs(folder:GetDescendants()) do
+			if object:IsA("ProximityPrompt") then
+				makePromptInstant(object)
+			end
+		end
+		task.wait(0.1)
+	end
+end)
+
+-- Logo ที่แสดงแทนหน้าต่างเมื่อพับ
+local logoButton = Instance.new("TextButton")
+logoButton.Name = "EggCollectorLogo"
+logoButton.Size = UDim2.fromOffset(62, 62)
+logoButton.Position = UDim2.new(0.5, -31, 0.5, -31)
+logoButton.BackgroundColor3 = Color3.fromRGB(35, 42, 57)
+logoButton.BorderSizePixel = 0
+logoButton.Font = Enum.Font.GothamBold
+logoButton.Text = "EGG"
+logoButton.TextColor3 = Color3.fromRGB(255, 230, 70)
+logoButton.TextSize = 16
+logoButton.Visible = false
+logoButton.Active = true
+logoButton.Draggable = true
+logoButton.Parent = screenGui
+
+local logoCorner = Instance.new("UICorner")
+logoCorner.CornerRadius = UDim.new(1, 0)
+logoCorner.Parent = logoButton
+
+local logoStroke = Instance.new("UIStroke")
+logoStroke.Color = Color3.fromRGB(75, 135, 255)
+logoStroke.Thickness = 2
+logoStroke.Parent = logoButton
+
+local logoGradient = Instance.new("UIGradient")
+logoGradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(49, 60, 82)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(21, 25, 34)),
+})
+logoGradient.Rotation = 45
+logoGradient.Parent = logoButton
+
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.fromOffset(330, 245)
-main.Position = UDim2.new(0.5, -165, 0.5, -122)
+main.Size = UDim2.fromOffset(330, 215)
+main.Position = UDim2.new(0.5, -165, 0.5, -107)
 main.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
 main.BorderSizePixel = 0
 main.Active = true
@@ -146,36 +368,9 @@ content.Position = UDim2.fromOffset(14, 51)
 content.BackgroundTransparency = 1
 content.Parent = main
 
-local countLabel = Instance.new("TextLabel")
-countLabel.Size = UDim2.new(1, 0, 0, 25)
-countLabel.BackgroundTransparency = 1
-countLabel.Font = Enum.Font.GothamMedium
-countLabel.Text = "จำนวนไข่ที่ต้องการเก็บ"
-countLabel.TextColor3 = Color3.fromRGB(215, 220, 235)
-countLabel.TextSize = 14
-countLabel.TextXAlignment = Enum.TextXAlignment.Left
-countLabel.Parent = content
-
-local countInput = Instance.new("TextBox")
-countInput.Size = UDim2.new(1, 0, 0, 38)
-countInput.Position = UDim2.fromOffset(0, 29)
-countInput.BackgroundColor3 = Color3.fromRGB(38, 43, 54)
-countInput.ClearTextOnFocus = false
-countInput.Font = Enum.Font.Gotham
-countInput.PlaceholderText = "ใส่จำนวนไข่"
-countInput.Text = "10"
-countInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-countInput.PlaceholderColor3 = Color3.fromRGB(130, 138, 155)
-countInput.TextSize = 15
-countInput.Parent = content
-
-local inputCorner = Instance.new("UICorner")
-inputCorner.CornerRadius = UDim.new(0, 7)
-inputCorner.Parent = countInput
-
 local toggleButton = Instance.new("TextButton")
 toggleButton.Size = UDim2.new(1, 0, 0, 42)
-toggleButton.Position = UDim2.fromOffset(0, 77)
+toggleButton.Position = UDim2.fromOffset(0, 0)
 toggleButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
 toggleButton.Font = Enum.Font.GothamBold
 toggleButton.Text = "เริ่มหาและเก็บไข่"
@@ -189,7 +384,7 @@ toggleCorner.Parent = toggleButton
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, 0, 0, 27)
-statusLabel.Position = UDim2.fromOffset(0, 126)
+statusLabel.Position = UDim2.fromOffset(0, 50)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.Text = "สถานะ: ปิด"
@@ -200,7 +395,7 @@ statusLabel.Parent = content
 
 local keyLabel = Instance.new("TextLabel")
 keyLabel.Size = UDim2.new(1, 0, 0, 23)
-keyLabel.Position = UDim2.fromOffset(0, 153)
+keyLabel.Position = UDim2.fromOffset(0, 80)
 keyLabel.BackgroundTransparency = 1
 keyLabel.Font = Enum.Font.Gotham
 keyLabel.Text = "L = ซ่อน / แสดงหน้าต่าง"
@@ -208,6 +403,158 @@ keyLabel.TextColor3 = Color3.fromRGB(105, 150, 245)
 keyLabel.TextSize = 12
 keyLabel.TextXAlignment = Enum.TextXAlignment.Left
 keyLabel.Parent = content
+
+local zoneButton = Instance.new("TextButton")
+zoneButton.Size = UDim2.new(1, 0, 0, 38)
+zoneButton.Position = UDim2.fromOffset(0, 110)
+zoneButton.BackgroundColor3 = Color3.fromRGB(64, 105, 190)
+zoneButton.Font = Enum.Font.GothamBold
+zoneButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+zoneButton.TextSize = 14
+zoneButton.Parent = content
+
+local zoneButtonCorner = Instance.new("UICorner")
+zoneButtonCorner.CornerRadius = UDim.new(0, 8)
+zoneButtonCorner.Parent = zoneButton
+
+local zonePanel = Instance.new("Frame")
+zonePanel.Name = "ZonePanel"
+zonePanel.Size = UDim2.fromOffset(250, 375)
+zonePanel.Position = UDim2.new(1, 10, 0, 0)
+zonePanel.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
+zonePanel.BorderSizePixel = 0
+zonePanel.Visible = false
+zonePanel.Parent = main
+
+local zonePanelCorner = Instance.new("UICorner")
+zonePanelCorner.CornerRadius = UDim.new(0, 10)
+zonePanelCorner.Parent = zonePanel
+
+local zonePanelStroke = Instance.new("UIStroke")
+zonePanelStroke.Color = Color3.fromRGB(75, 135, 255)
+zonePanelStroke.Thickness = 1.5
+zonePanelStroke.Parent = zonePanel
+
+local zoneTitle = Instance.new("TextLabel")
+zoneTitle.Size = UDim2.new(1, -20, 0, 38)
+zoneTitle.Position = UDim2.fromOffset(10, 5)
+zoneTitle.BackgroundTransparency = 1
+zoneTitle.Font = Enum.Font.GothamBold
+zoneTitle.Text = "เลือก Zone (เลือกได้หลายโซน)"
+zoneTitle.TextColor3 = Color3.fromRGB(240, 244, 255)
+zoneTitle.TextSize = 14
+zoneTitle.TextXAlignment = Enum.TextXAlignment.Left
+zoneTitle.Parent = zonePanel
+
+local selectAllButton = Instance.new("TextButton")
+selectAllButton.Size = UDim2.new(0.5, -13, 0, 32)
+selectAllButton.Position = UDim2.fromOffset(10, 44)
+selectAllButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
+selectAllButton.Font = Enum.Font.GothamBold
+selectAllButton.Text = "เลือกทั้งหมด"
+selectAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+selectAllButton.TextSize = 12
+selectAllButton.Parent = zonePanel
+
+local clearAllButton = Instance.new("TextButton")
+clearAllButton.Size = UDim2.new(0.5, -13, 0, 32)
+clearAllButton.Position = UDim2.new(0.5, 3, 0, 44)
+clearAllButton.BackgroundColor3 = Color3.fromRGB(180, 65, 75)
+clearAllButton.Font = Enum.Font.GothamBold
+clearAllButton.Text = "ยกเลิกทั้งหมด"
+clearAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+clearAllButton.TextSize = 12
+clearAllButton.Parent = zonePanel
+
+for _, button in ipairs({selectAllButton, clearAllButton}) do
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 7)
+	corner.Parent = button
+end
+
+local zoneList = Instance.new("ScrollingFrame")
+zoneList.Size = UDim2.new(1, -20, 1, -91)
+zoneList.Position = UDim2.fromOffset(10, 83)
+zoneList.BackgroundColor3 = Color3.fromRGB(30, 34, 43)
+zoneList.BorderSizePixel = 0
+zoneList.ScrollBarThickness = 5
+zoneList.CanvasSize = UDim2.fromOffset(0, #ZONES * 36 + 8)
+zoneList.Parent = zonePanel
+
+local zoneListCorner = Instance.new("UICorner")
+zoneListCorner.CornerRadius = UDim.new(0, 8)
+zoneListCorner.Parent = zoneList
+
+local zoneButtons = {}
+
+local function countSelectedZones()
+	local count = 0
+	for _, zone in ipairs(ZONES) do
+		if selectedZones[zone.Name] then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function refreshZoneUI()
+	local selectedCount = countSelectedZones()
+	zoneButton.Text = string.format("เลือก Zone: %d/%d", selectedCount, #ZONES)
+
+	for zoneName, button in pairs(zoneButtons) do
+		local selected = selectedZones[zoneName]
+		button.Text = (selected and "[✓] " or "[ ] ") .. zoneName
+		button.BackgroundColor3 = selected
+			and Color3.fromRGB(54, 115, 90)
+			or Color3.fromRGB(48, 53, 65)
+	end
+end
+
+for index, zone in ipairs(ZONES) do
+	local zoneOption = Instance.new("TextButton")
+	zoneOption.Size = UDim2.new(1, -10, 0, 31)
+	zoneOption.Position = UDim2.fromOffset(5, 4 + (index - 1) * 36)
+	zoneOption.BorderSizePixel = 0
+	zoneOption.Font = Enum.Font.GothamMedium
+	zoneOption.TextColor3 = Color3.fromRGB(245, 245, 250)
+	zoneOption.TextSize = 13
+	zoneOption.TextXAlignment = Enum.TextXAlignment.Left
+	zoneOption.Parent = zoneList
+
+	local optionPadding = Instance.new("UIPadding")
+	optionPadding.PaddingLeft = UDim.new(0, 10)
+	optionPadding.Parent = zoneOption
+
+	local optionCorner = Instance.new("UICorner")
+	optionCorner.CornerRadius = UDim.new(0, 6)
+	optionCorner.Parent = zoneOption
+
+	zoneButtons[zone.Name] = zoneOption
+	zoneOption.MouseButton1Click:Connect(function()
+		selectedZones[zone.Name] = not selectedZones[zone.Name]
+		refreshZoneUI()
+	end)
+end
+
+zoneButton.MouseButton1Click:Connect(function()
+	zonePanel.Visible = not zonePanel.Visible
+end)
+
+selectAllButton.MouseButton1Click:Connect(function()
+	for _, zone in ipairs(ZONES) do
+		selectedZones[zone.Name] = true
+	end
+	refreshZoneUI()
+end)
+
+clearAllButton.MouseButton1Click:Connect(function()
+	for _, zone in ipairs(ZONES) do
+		selectedZones[zone.Name] = false
+	end
+	refreshZoneUI()
+end)
+
+refreshZoneUI()
 
 local function updateRunningUI()
 	if running then
@@ -260,9 +607,31 @@ local function collectEgg(egg, index, token, rootPart, originalCFrame)
 		end
 	end
 
-	statusLabel.Text = string.format("สถานะ: กำลังเก็บใบที่ %d - %s", index, egg.Name)
-	rootPart.CFrame = teleportCFrame
-	task.wait(0.03)
+	local currentZone = getObjectZone(egg)
+	statusLabel.Text = string.format(
+		"สถานะ: %s | ใบที่ %d - %s",
+		currentZone and currentZone.Name or "Unknown Zone",
+		index,
+		egg.Name
+	)
+
+	-- ล็อกตำแหน่ง 2 ช่วงต่อเฟรมเพื่อกันเกมดึงตัวกลับ
+	local function lockAtEgg()
+		if running
+			and token == runToken
+			and rootPart.Parent
+			and egg.Parent then
+
+			rootPart.CFrame = teleportCFrame
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+			rootPart.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+
+	lockAtEgg()
+	local steppedLock = RunService.Stepped:Connect(lockAtEgg)
+	local heartbeatLock = RunService.Heartbeat:Connect(lockAtEgg)
+	RunService.Heartbeat:Wait()
 
 	local startTime = os.clock()
 	while running and token == runToken and os.clock() - startTime < TELEPORT_TIME do
@@ -275,15 +644,16 @@ local function collectEgg(egg, index, token, rootPart, originalCFrame)
 		for _, prompt in ipairs(prompts) do
 			if prompt.Parent and prompt.Enabled then
 				makePromptInstant(prompt)
-				if fireproximityprompt then
-					fireproximityprompt(prompt, 0)
-				end
+				triggerPromptInstant(prompt)
 			end
 		end
 
 		pressE()
-		task.wait(0.03)
+		-- pressE มี yield 0.01 อยู่แล้ว จึงวนรอบต่อทันทีโดยไม่หน่วงเพิ่ม
 	end
+
+	steppedLock:Disconnect()
+	heartbeatLock:Disconnect()
 
 	forceReturn(rootPart, originalCFrame)
 	task.wait(WAIT_BETWEEN_EGGS)
@@ -298,36 +668,102 @@ local function stopCollecting(message)
 	VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
 end
 
-local function startCollecting()
-	local requestedCount = tonumber(countInput.Text)
-	if not requestedCount or requestedCount < 1 then
-		statusLabel.Text = "สถานะ: กรุณาใส่จำนวนไข่ตั้งแต่ 1 ขึ้นไป"
-		return
+local function findEggHitbox(egg)
+	if egg:IsA("BasePart") and string.lower(egg.Name) == "hitbox" then
+		return egg
 	end
 
-	requestedCount = math.floor(requestedCount)
-	countInput.Text = tostring(requestedCount)
+	for _, object in ipairs(egg:GetDescendants()) do
+		if object:IsA("BasePart")
+			and string.lower(object.Name) == "hitbox" then
+
+			return object
+		end
+	end
+	return nil
+end
+
+local function getHitboxVolume(egg)
+	local hitbox = findEggHitbox(egg)
+	if not hitbox then
+		return 0
+	end
+
+	local size = hitbox.Size
+	return size.X * size.Y * size.Z
+end
+
+local function startCollecting()
+	local selectedZoneCount = countSelectedZones()
+	if selectedZoneCount == 0 then
+		statusLabel.Text = "สถานะ: กรุณาเลือกอย่างน้อย 1 Zone"
+		return
+	end
 
 	local _, rootPart = getCharacterParts()
 	local originalCFrame = rootPart.CFrame
 	local eggs = {}
+	local eggsByZone = {}
+	local eggSortData = {}
+	local originalIndex = 0
+
+	for _, zone in ipairs(ZONES) do
+		eggsByZone[zone.Name] = {}
+	end
 
 	for _, object in ipairs(folder:GetChildren()) do
 		if object:IsA("Model") or object:IsA("BasePart") then
-			table.insert(eggs, object)
+			originalIndex += 1
+			local zone = getObjectZone(object)
+			if zone and selectedZones[zone.Name] then
+				eggSortData[object] = {
+					Volume = getHitboxVolume(object),
+					OriginalIndex = originalIndex,
+				}
+				table.insert(eggsByZone[zone.Name], object)
+			end
+		end
+	end
+
+	-- ภายในแต่ละ Zone เรียง Hitbox จากปริมาตรใหญ่ที่สุดไปเล็กที่สุด
+	for _, zone in ipairs(ZONES) do
+		table.sort(eggsByZone[zone.Name], function(eggA, eggB)
+			local dataA = eggSortData[eggA]
+			local dataB = eggSortData[eggB]
+
+			if dataA.Volume == dataB.Volume then
+				return dataA.OriginalIndex < dataB.OriginalIndex
+			end
+
+			return dataA.Volume > dataB.Volume
+		end)
+	end
+
+	-- เริ่มจาก Zone หลังสุด: Cosmic -> Prehistoric -> ... -> First Zone
+	for zoneIndex = #ZONES, 1, -1 do
+		local zone = ZONES[zoneIndex]
+		if selectedZones[zone.Name] then
+			for _, egg in ipairs(eggsByZone[zone.Name]) do
+				table.insert(eggs, egg)
+			end
 		end
 	end
 
 	if #eggs == 0 then
-		statusLabel.Text = "สถานะ: ไม่พบไข่ใน AreaEggSlotsClient"
+		statusLabel.Text = "สถานะ: ไม่พบไข่ใน Zone ที่เลือก"
 		return
 	end
 
-	local amountToCollect = math.min(requestedCount, #eggs)
+	local amountToCollect = #eggs
 	running = true
 	runToken += 1
 	local token = runToken
 	updateRunningUI()
+	statusLabel.Text = string.format(
+		"สถานะ: พบ %d ใบใน %d Zone",
+		#eggs,
+		selectedZoneCount
+	)
 
 	task.spawn(function()
 		for index = 1, amountToCollect do
@@ -385,14 +821,38 @@ toggleButton.MouseButton1Click:Connect(function()
 end)
 
 minimizeButton.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	content.Visible = not minimized
-	main.Size = minimized and UDim2.fromOffset(330, 44) or UDim2.fromOffset(330, 245)
-	minimizeButton.Text = minimized and "+" or "—"
+	minimized = true
+	zonePanel.Visible = false
+	logoButton.Position = main.Position
+	main.Visible = false
+	logoButton.Visible = guiVisible
+end)
+
+logoButton.MouseButton1Click:Connect(function()
+	minimized = false
+	main.Position = logoButton.Position
+	logoButton.Visible = false
+	main.Visible = guiVisible
 end)
 
 closeButton.MouseButton1Click:Connect(function()
+	scriptClosed = true
 	stopCollecting("สถานะ: ปิดโปรแกรม")
+
+	for egg in pairs(eggHighlights) do
+		removeEggESP(egg)
+	end
+
+	for prompt, data in pairs(promptData) do
+		if data.HoldConnection then
+			data.HoldConnection:Disconnect()
+		end
+		if data.DestroyConnection then
+			data.DestroyConnection:Disconnect()
+		end
+		promptData[prompt] = nil
+	end
+
 	screenGui:Destroy()
 end)
 
@@ -403,7 +863,13 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
 	if input.KeyCode == TOGGLE_KEY and screenGui.Parent then
 		guiVisible = not guiVisible
-		main.Visible = guiVisible
+		if minimized then
+			logoButton.Visible = guiVisible
+			main.Visible = false
+		else
+			main.Visible = guiVisible
+			logoButton.Visible = false
+		end
 	end
 end)
 
