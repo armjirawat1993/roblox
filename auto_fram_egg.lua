@@ -45,7 +45,6 @@ local eggHighlights = {}
 local hideRenderedEnabled = false
 local selectedSizeThreshold = 0
 local autoFarmEnabled = false
-local originalTransparency = setmetatable({}, {__mode = "k"})
 
 local function isTransparencyObject(object)
 	return object:IsA("BasePart")
@@ -53,54 +52,62 @@ local function isTransparencyObject(object)
 		or object:IsA("Texture")
 end
 
-local function isInRenderedHideFolder(object)
-	local clientAssets = Workspace:FindFirstChild("ClientRenderedAssets")
-	local placedEggs = Workspace:FindFirstChild("PlacedEggRenders")
+local function getRenderedHideFolders()
+	local folders = {}
 
-	return (clientAssets and object:IsDescendantOf(clientAssets))
-		or (placedEggs and object:IsDescendantOf(placedEggs))
+	-- ใช้ GetChildren เพราะ Workspace มี PlacedEggRenders ชื่อซ้ำ 2 Folder
+	for _, object in ipairs(Workspace:GetChildren()) do
+		if object.Name == "ClientRenderedAssets"
+			or object.Name == "PlacedEggRenders" then
+
+			table.insert(folders, object)
+		end
+	end
+
+	return folders
 end
 
-local function hideRenderedObject(object)
-	if not hideRenderedEnabled
-		or not isTransparencyObject(object)
+local function isInRenderedHideFolder(object)
+	for _, targetFolder in ipairs(getRenderedHideFolders()) do
+		if object:IsDescendantOf(targetFolder) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function applyRenderedTransparency(object, transparency)
+	if not isTransparencyObject(object)
 		or not isInRenderedHideFolder(object) then
 
 		return
 	end
 
-	if originalTransparency[object] == nil then
-		originalTransparency[object] = object.Transparency
-	end
-	object.Transparency = 1
+	object.Transparency = transparency
 end
 
 local function setRenderedHidden(enabled)
 	hideRenderedEnabled = enabled
+	local transparency = enabled and 1 or 0
 
-	if enabled then
-		for _, folderName in ipairs({"ClientRenderedAssets", "PlacedEggRenders"}) do
-			local targetFolder = Workspace:FindFirstChild(folderName)
-			if targetFolder then
-				for _, object in ipairs(targetFolder:GetDescendants()) do
-					hideRenderedObject(object)
-				end
-			end
-		end
-	else
-		for object, transparency in pairs(originalTransparency) do
-			if object.Parent then
+	-- ประมวลผล PlacedEggRenders ทุก Folder ที่ชื่อซ้ำกันใน Workspace
+	for _, targetFolder in ipairs(getRenderedHideFolders()) do
+		for _, object in ipairs(targetFolder:GetDescendants()) do
+			if isTransparencyObject(object) then
 				object.Transparency = transparency
 			end
-			originalTransparency[object] = nil
 		end
 	end
 end
 
 Workspace.DescendantAdded:Connect(function(object)
-	if hideRenderedEnabled then
-		task.defer(hideRenderedObject, object)
-	end
+	task.defer(function()
+		applyRenderedTransparency(
+			object,
+			hideRenderedEnabled and 1 or 0
+		)
+	end)
 end)
 
 local function getObjectPosition(object)
@@ -311,16 +318,8 @@ task.spawn(function()
 			end
 		end
 
-		if hideRenderedEnabled then
-			for _, folderName in ipairs({"ClientRenderedAssets", "PlacedEggRenders"}) do
-				local targetFolder = Workspace:FindFirstChild(folderName)
-				if targetFolder then
-					for _, object in ipairs(targetFolder:GetDescendants()) do
-						hideRenderedObject(object)
-					end
-				end
-			end
-		end
+		-- บังคับค่า 1 ตอน ON และค่า 0 ตอน OFF รวมทุก Model ใน Folder ย่อย
+		setRenderedHidden(hideRenderedEnabled)
 		task.wait(0.1)
 	end
 end)
