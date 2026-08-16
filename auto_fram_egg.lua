@@ -1,34 +1,55 @@
--- Egg Collector GUI
--- Toggle GUI: L
+-- Character + Find Egg UI
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local ProximityPromptService = game:GetService("ProximityPromptService")
-local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local folder = workspace:WaitForChild("AreaEggSlotsClient")
 
-local TOGGLE_KEY = Enum.KeyCode.L
-local TELEPORT_TIME = 0.5
-local DELAY_NEXT_ROUND = 1
-local WAIT_BETWEEN_EGGS = 0.1
-local EMPTY_CONFIRM_TIME = 1.5
+local FLY_RETURN_LEFT = CFrame.new(
+	544.8623657226562,
+	70.28306579589844,
+	-320.2812194824219
+)
 
--- ขอบเขต Zone ใช้ค่าแกน X จาก Position จุดเริ่มและจุดสิ้นสุด
+local FLY_RETURN_RIGHT = CFrame.new(
+	546.082763671875,
+	70.28306579589844,
+	-425.8914794921875
+)
+
+local VOLCANO_RETURN_WAYPOINT = CFrame.new(
+	1570.1673583984375,
+	69.53539276123047,
+	-296.7453918457031
+)
+
+local ABYSS_COSMIC_RETURN_WAYPOINT = CFrame.new(
+	1520.081298828125,
+	69.53531646728516,
+	-429.0282287597656
+)
+
 local ZONES = {
-	{Name = "First Zone", MinX = 576.90, MaxX = 619.76, Color = Color3.fromRGB(255, 230, 70)},
-	{Name = "Lake", MinX = 703.63, MaxX = 772.56, Color = Color3.fromRGB(40, 170, 255)},
-	{Name = "Desert", MinX = 895.85, MaxX = 966.46, Color = Color3.fromRGB(255, 145, 45)},
-	{Name = "Jungle", MinX = 1145.36, MaxX = 1207.19, Color = Color3.fromRGB(45, 220, 90)},
-	{Name = "Snow", MinX = 1422.21, MaxX = 1526.41, Color = Color3.fromRGB(190, 240, 255)},
-	{Name = "Volcano", MinX = 1789.88, MaxX = 1920.64, Color = Color3.fromRGB(255, 55, 45)},
-	{Name = "Abyss Ocean", MinX = 2195.42, MaxX = 2340.19, Color = Color3.fromRGB(35, 65, 210)},
-	{Name = "Prehistoric", MinX = 2709.03, MaxX = 2840.94, Color = Color3.fromRGB(180, 90, 255)},
-	{Name = "Cosmic", MinX = 3289.73, MaxX = 3456.04, Color = Color3.fromRGB(255, 70, 210)},
+	{Name = "First Zone", MinX = 576.90, MaxX = 619.76},
+	{Name = "Lake", MinX = 703.63, MaxX = 772.56},
+	{Name = "Desert", MinX = 895.85, MaxX = 966.46},
+	{Name = "Jungle", MinX = 1145.36, MaxX = 1207.19},
+	{Name = "Snow", MinX = 1422.21, MaxX = 1526.41},
+	{Name = "Volcano", MinX = 1789.88, MaxX = 1920.64},
+	{Name = "Abyss Ocean", MinX = 2195.42, MaxX = 2340.19},
+	{Name = "Prehistoric", MinX = 2709.03, MaxX = 2840.94},
+	{Name = "Cosmic", MinX = 3289.73, MaxX = 3456.04},
+}
+
+local ZONE_RETURN_WAYPOINTS = {
+	["Volcano"] = VOLCANO_RETURN_WAYPOINT,
+	["Prehistoric"] = VOLCANO_RETURN_WAYPOINT,
+	["Abyss Ocean"] = ABYSS_COSMIC_RETURN_WAYPOINT,
+	["Cosmic"] = ABYSS_COSMIC_RETURN_WAYPOINT,
 }
 
 local selectedZones = {}
@@ -36,1146 +57,1479 @@ for _, zone in ipairs(ZONES) do
 	selectedZones[zone.Name] = true
 end
 
-local running = false
-local runToken = 0
-local minimized = false
+local SIZE_FILTERS = {0, 1, 1.5, 2, 2.5, 3}
+local selectedHitboxSize = 0
+
+local Config = {
+	ToggleKey = Enum.KeyCode.L,
+	WalkSpeedEnabled = false,
+	LockWalkSpeed = false,
+	WalkSpeed = 50,
+	NormalWalkSpeed = 16,
+	MinWalkSpeed = 16,
+	MaxWalkSpeed = 500,
+	InfiniteJump = false,
+	NoclipEnabled = false,
+	ManualFlyEnabled = false,
+	ManualFlySpeed = 60,
+	MinManualFlySpeed = 10,
+	MaxManualFlySpeed = 500,
+	InstantPrompt = false,
+	FindEggEnabled = false,
+	FindEggMode = "RUN",
+	FindEggSpeed = 250,
+	MinFindEggSpeed = 250,
+	MaxFindEggSpeed = 500,
+	ArrivalDistance = 3,
+	EggArrivalDistance = 1,
+	CollectWaitTime = 0.35,
+	TargetRetryDelay = 0.15,
+	TargetRetryLimit = 5,
+	ReturnWaitTime = 0.25,
+}
+
+local UI = { State = {} }
+local connections = {}
 local scriptClosed = false
-local promptData = {}
-local eggHighlights = {}
-local hideRenderedEnabled = false
-local selectedSizeThreshold = 0
-local autoFarmEnabled = false
+local walkLockConnection
+local flyConnection
+local flyVelocity
+local flyGyro
+local findEggRunId = 0
+local findEggThread
+local noclipOriginal = {}
+local noclipConnection
+local promptOriginal = {}
 
-local function isTransparencyObject(object)
-	return object:IsA("BasePart")
-		or object:IsA("Decal")
-		or object:IsA("Texture")
+local function addConnection(connection)
+	table.insert(connections, connection)
+	return connection
 end
 
-local function getRenderedHideFolders()
-	local folders = {}
-
-	-- ใช้ GetChildren เพราะ Workspace มี PlacedEggRenders ชื่อซ้ำ 2 Folder
-	for _, object in ipairs(Workspace:GetChildren()) do
-		if object.Name == "ClientRenderedAssets"
-			or object.Name == "PlacedEggRenders" then
-
-			table.insert(folders, object)
+local function disconnectAll()
+	for _, connection in ipairs(connections) do
+		if connection and connection.Connected then
+			connection:Disconnect()
 		end
 	end
-
-	return folders
+	table.clear(connections)
 end
 
-local function isInsideDirectRenderedModel(object)
-	for _, targetFolder in ipairs(getRenderedHideFolders()) do
-		local current = object
+local function getCharacter()
+	return player.Character
+end
 
-		while current and current.Parent ~= targetFolder do
-			current = current.Parent
-		end
+local function getHumanoid()
+	local character = getCharacter()
+	return character and character:FindFirstChildOfClass("Humanoid")
+end
 
-		-- รับเฉพาะ Model ที่เป็นลูกโดยตรงของ Folder หลัก
-		if current
-			and current.Parent == targetFolder
-			and current:IsA("Model") then
+local function getRootPart()
+	local character = getCharacter()
+	return character and character:FindFirstChild("HumanoidRootPart")
+end
 
-			return true
+-- Walk Speed
+local function applyWalkSpeed()
+	local humanoid = getHumanoid()
+	if humanoid then
+		if Config.FindEggEnabled then
+			humanoid.WalkSpeed = Config.FindEggSpeed
+		else
+			humanoid.WalkSpeed = Config.WalkSpeedEnabled
+				and Config.WalkSpeed
+				or Config.NormalWalkSpeed
 		end
 	end
-
-	return false
 end
 
-local function applyRenderedTransparency(object, transparency)
-	if not isTransparencyObject(object)
-		or not isInsideDirectRenderedModel(object) then
+local function refreshWalkSpeedLock()
+	Config.LockWalkSpeed =
+		Config.WalkSpeedEnabled or Config.FindEggEnabled
 
+	if walkLockConnection then
+		walkLockConnection:Disconnect()
+		walkLockConnection = nil
+	end
+
+	applyWalkSpeed()
+
+	if Config.LockWalkSpeed then
+		walkLockConnection = RunService.Heartbeat:Connect(applyWalkSpeed)
+	end
+end
+
+local function setWalkSpeedEnabled(enabled)
+	Config.WalkSpeedEnabled = enabled
+	refreshWalkSpeedLock()
+end
+
+-- Infinite Jump
+addConnection(UserInputService.JumpRequest:Connect(function()
+	if not scriptClosed and Config.InfiniteJump then
+		local humanoid = getHumanoid()
+		if humanoid then
+			humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end
+end))
+
+-- Noclip
+local function applyNoclip()
+	local character = getCharacter()
+	if not character then
+		return
+	end
+	for _, object in ipairs(character:GetDescendants()) do
+		if object:IsA("BasePart") then
+			if noclipOriginal[object] == nil then
+				noclipOriginal[object] = object.CanCollide
+			end
+			object.CanCollide = false
+		end
+	end
+end
+
+local function setNoclipEnabled(enabled)
+	Config.NoclipEnabled = enabled
+	if noclipConnection then
+		noclipConnection:Disconnect()
+		noclipConnection = nil
+	end
+	if enabled then
+		applyNoclip()
+		noclipConnection = RunService.Stepped:Connect(applyNoclip)
+	else
+		for part, canCollide in pairs(noclipOriginal) do
+			if part and part.Parent then
+				part.CanCollide = canCollide
+			end
+		end
+		table.clear(noclipOriginal)
+	end
+end
+
+-- Instant Prompt
+local function applyPrompt(prompt)
+	if not prompt:IsA("ProximityPrompt") then
+		return
+	end
+	if promptOriginal[prompt] == nil then
+		promptOriginal[prompt] = prompt.HoldDuration
+	end
+	prompt.HoldDuration = 0
+end
+
+local function setInstantPromptEnabled(enabled)
+	Config.InstantPrompt = enabled
+	if enabled then
+		for _, object in ipairs(Workspace:GetDescendants()) do
+			applyPrompt(object)
+		end
+	else
+		for prompt, duration in pairs(promptOriginal) do
+			if prompt and prompt.Parent then
+				prompt.HoldDuration = duration
+			end
+		end
+		table.clear(promptOriginal)
+	end
+end
+
+addConnection(Workspace.DescendantAdded:Connect(function(object)
+	if Config.InstantPrompt then
+		applyPrompt(object)
+	end
+end))
+
+local function pressEOnce()
+	pcall(function()
+		VirtualInputManager:SendKeyEvent(
+			true,
+			Enum.KeyCode.E,
+			false,
+			game
+		)
+		task.wait(0.05)
+		VirtualInputManager:SendKeyEvent(
+			false,
+			Enum.KeyCode.E,
+			false,
+			game
+		)
+	end)
+end
+
+-- Manual Fly
+local function stopManualFly()
+	if flyConnection then
+		flyConnection:Disconnect()
+		flyConnection = nil
+	end
+	if flyVelocity then
+		flyVelocity:Destroy()
+		flyVelocity = nil
+	end
+	if flyGyro then
+		flyGyro:Destroy()
+		flyGyro = nil
+	end
+	local humanoid = getHumanoid()
+	if humanoid then
+		humanoid.PlatformStand = false
+		humanoid.AutoRotate = true
+	end
+end
+
+local function startManualFly()
+	stopManualFly()
+	local root = getRootPart()
+	local humanoid = getHumanoid()
+	if not root or not humanoid then
+		Config.ManualFlyEnabled = false
 		return
 	end
 
-	object.Transparency = transparency
+	humanoid.PlatformStand = true
+	humanoid.AutoRotate = false
+	flyVelocity = Instance.new("BodyVelocity")
+	flyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+	flyVelocity.Velocity = Vector3.zero
+	flyVelocity.Parent = root
+	flyGyro = Instance.new("BodyGyro")
+	flyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+	flyGyro.P = 9000
+	flyGyro.CFrame = root.CFrame
+	flyGyro.Parent = root
+
+	flyConnection = RunService.RenderStepped:Connect(function()
+		if scriptClosed or not Config.ManualFlyEnabled or not root.Parent then
+			stopManualFly()
+			return
+		end
+		local camera = Workspace.CurrentCamera
+		local direction = Vector3.zero
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then direction += camera.CFrame.LookVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then direction -= camera.CFrame.LookVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then direction -= camera.CFrame.RightVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then direction += camera.CFrame.RightVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then direction += Vector3.yAxis end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then direction -= Vector3.yAxis end
+		flyVelocity.Velocity = direction.Magnitude > 0
+			and direction.Unit * Config.ManualFlySpeed
+			or Vector3.zero
+		flyGyro.CFrame = CFrame.lookAt(root.Position, root.Position + camera.CFrame.LookVector)
+	end)
 end
 
-local function setRenderedHidden(enabled)
-	hideRenderedEnabled = enabled
-	local transparency = enabled and 1 or 0
+local function setManualFlyEnabled(enabled)
+	Config.ManualFlyEnabled = enabled
+	if enabled then
+		startManualFly()
+	else
+		stopManualFly()
+	end
+end
 
-	-- เลือกเฉพาะ Model ที่เป็นลูกโดยตรง ไม่ค้น Model ใน Folder ซ้อนอีกชั้น
-	for _, targetFolder in ipairs(getRenderedHideFolders()) do
-		for _, model in ipairs(targetFolder:GetChildren()) do
-			if model:IsA("Model") then
-				for _, object in ipairs(model:GetDescendants()) do
-					if isTransparencyObject(object) then
-						object.Transparency = transparency
-					end
-				end
-			end
+-- Find Egg
+local function getObjectPosition(object)
+	if not object then
+		return nil
+	end
+
+	if object:IsA("BasePart") then
+		return object.Position
+	end
+	if object:IsA("Model") then
+		local ok, pivot = pcall(object.GetPivot, object)
+		if ok then
+			return pivot.Position
 		end
 	end
 end
 
-Workspace.DescendantAdded:Connect(function(object)
-	task.defer(function()
-		applyRenderedTransparency(
-			object,
-			hideRenderedEnabled and 1 or 0
-		)
-	end)
-end)
-
-local function getObjectPosition(object)
-	if object:IsA("Model") then
-		return object:GetPivot().Position
-	elseif object:IsA("BasePart") then
-		return object.Position
-	end
-	return nil
-end
-
-local function getObjectZone(object)
-	local position = getObjectPosition(object)
+local function getZoneFromPosition(position)
 	if not position then
 		return nil
 	end
 
-	for _, zone in ipairs(ZONES) do
-		local minX = math.min(zone.MinX, zone.MaxX)
-		local maxX = math.max(zone.MinX, zone.MaxX)
-		if position.X >= minX and position.X <= maxX then
-			return zone
+	for zoneIndex, zone in ipairs(ZONES) do
+		if position.X >= zone.MinX and position.X <= zone.MaxX then
+			return zoneIndex, zone.Name
 		end
 	end
 
 	return nil
 end
 
-local oldGui = playerGui:FindFirstChild("EggCollectorGUI")
-if oldGui then
-	oldGui:Destroy()
-end
-
-local function getCharacterParts()
-	local character = player.Character or player.CharacterAdded:Wait()
-	local rootPart = character:WaitForChild("HumanoidRootPart")
-	return character, rootPart
-end
-
-local function makePromptInstant(prompt)
-	if not prompt or not prompt:IsA("ProximityPrompt") then
-		return
+local function getHitboxSize(object)
+	if not object then
+		return nil
 	end
 
-	prompt.HoldDuration = 0
-	prompt.RequiresLineOfSight = false
-	prompt.MaxActivationDistance = math.max(prompt.MaxActivationDistance, 15)
-end
+	local hitbox = object.Name == "Hitbox"
+		and object:IsA("BasePart")
+		and object
+		or object:FindFirstChild("Hitbox", true)
 
-local function setupPrompt(prompt)
-	if scriptClosed or not prompt:IsA("ProximityPrompt") or promptData[prompt] then
-		return
+	if not hitbox or not hitbox:IsA("BasePart") then
+		return nil
 	end
 
-	local data = {}
-	promptData[prompt] = data
-	makePromptInstant(prompt)
-
-	data.HoldConnection = prompt:GetPropertyChangedSignal("HoldDuration"):Connect(function()
-		if not scriptClosed and prompt.Parent and prompt.HoldDuration ~= 0 then
-			prompt.HoldDuration = 0
-		end
-	end)
-
-	data.DestroyConnection = prompt.Destroying:Connect(function()
-		local currentData = promptData[prompt]
-		if currentData then
-			if currentData.HoldConnection then
-				currentData.HoldConnection:Disconnect()
-			end
-			if currentData.DestroyConnection then
-				currentData.DestroyConnection:Disconnect()
-			end
-			promptData[prompt] = nil
-		end
-	end)
-end
-
-local activePromptTriggers = setmetatable({}, {__mode = "k"})
-
-local function triggerPromptInstant(prompt)
-	if not prompt or not prompt.Parent or not prompt.Enabled then
-		return
-	end
-	if activePromptTriggers[prompt] then
-		return
-	end
-
-	activePromptTriggers[prompt] = true
-
-	makePromptInstant(prompt)
-
-	if fireproximityprompt then
-		-- รูปแบบ argument ที่ 3 ช่วยข้ามการจำลองเวลาค้าง
-		local success = pcall(function()
-			fireproximityprompt(prompt, 0, true)
-		end)
-
-		if not success then
-			pcall(function()
-				fireproximityprompt(prompt, 0)
-			end)
-		end
-	else
-		-- Fallback กรณี executor ไม่มี fireproximityprompt
-		pcall(function()
-			prompt:InputHoldBegin()
-			task.wait()
-			prompt:InputHoldEnd()
-		end)
-	end
-
-	activePromptTriggers[prompt] = nil
-end
-
--- ใช้ Instant Prompt แบบเดียวกับ Main_world.lua และครอบคลุมทั้ง Workspace
-for _, object in ipairs(Workspace:GetDescendants()) do
-	if object:IsA("ProximityPrompt") then
-		setupPrompt(object)
-	end
-end
-
-Workspace.DescendantAdded:Connect(function(object)
-	if object:IsA("ProximityPrompt") then
-		task.defer(setupPrompt, object)
-	end
-end)
-
-ProximityPromptService.PromptShown:Connect(function(prompt)
-	if prompt:IsDescendantOf(folder) then
-		makePromptInstant(prompt)
-	end
-end)
-
--- เมื่อผู้เล่นเริ่มกด E ให้จบ Prompt ทันทีโดยไม่ต้องรอวงโหลด
-ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt)
-	if prompt:IsDescendantOf(folder) then
-		task.defer(triggerPromptInstant, prompt)
-	end
-end)
-
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "EggCollectorGUI"
-screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
-
-local function removeEggESP(egg)
-	local highlight = eggHighlights[egg]
-	if highlight then
-		highlight:Destroy()
-		eggHighlights[egg] = nil
-	end
-	if egg and egg.Parent then
-		local existing = egg:FindFirstChild("EggZoneESP")
-		if existing and existing:IsA("Highlight") then
-			existing:Destroy()
-		end
-	end
-end
-
-local function addEggESP(egg)
-	if not egg or not egg.Parent then
-		return
-	end
-	if not egg:IsA("Model") and not egg:IsA("BasePart") then
-		return
-	end
-
-	local zone = getObjectZone(egg)
-	if not zone then
-		removeEggESP(egg)
-		return
-	end
-
-	removeEggESP(egg)
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "EggZoneESP"
-	highlight.Adornee = egg
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.FillColor = zone.Color
-	highlight.OutlineColor = zone.Color
-	highlight.FillTransparency = 0.45
-	highlight.OutlineTransparency = 0
-	highlight.Parent = egg
-	eggHighlights[egg] = highlight
-end
-
--- เปิด ESP ไข่ทั้งหมดทันทีเมื่อรัน โดยแต่ละ Zone ใช้คนละสี
-for _, object in ipairs(folder:GetChildren()) do
-	addEggESP(object)
-end
-
-folder.ChildAdded:Connect(function(object)
-	task.defer(addEggESP, object)
-end)
-
-folder.ChildRemoved:Connect(function(object)
-	removeEggESP(object)
-end)
-
--- บางเกมเขียน HoldDuration กลับ จึงบังคับ Instant ตลอดเวลาที่ GUI ทำงาน
-task.spawn(function()
-	while screenGui.Parent do
-		for _, object in ipairs(folder:GetDescendants()) do
-			if object:IsA("ProximityPrompt") then
-				makePromptInstant(object)
-			end
-		end
-
-		-- บังคับค่า 1 ตอน ON และค่า 0 ตอน OFF รวมทุก Model ใน Folder ย่อย
-		setRenderedHidden(hideRenderedEnabled)
-		task.wait(0.1)
-	end
-end)
-
--- Logo ที่แสดงแทนหน้าต่างเมื่อพับ
-local logoButton = Instance.new("TextButton")
-logoButton.Name = "EggCollectorLogo"
-logoButton.Size = UDim2.fromOffset(62, 62)
-logoButton.Position = UDim2.new(0.5, -31, 0.5, -31)
-logoButton.BackgroundColor3 = Color3.fromRGB(35, 42, 57)
-logoButton.BorderSizePixel = 0
-logoButton.Font = Enum.Font.GothamBold
-logoButton.Text = "EGG"
-logoButton.TextColor3 = Color3.fromRGB(255, 230, 70)
-logoButton.TextSize = 16
-logoButton.Visible = false
-logoButton.Active = true
-logoButton.Draggable = true
-logoButton.Parent = screenGui
-
-local logoCorner = Instance.new("UICorner")
-logoCorner.CornerRadius = UDim.new(1, 0)
-logoCorner.Parent = logoButton
-
-local logoStroke = Instance.new("UIStroke")
-logoStroke.Color = Color3.fromRGB(75, 135, 255)
-logoStroke.Thickness = 2
-logoStroke.Parent = logoButton
-
-local logoGradient = Instance.new("UIGradient")
-logoGradient.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(49, 60, 82)),
-	ColorSequenceKeypoint.new(1, Color3.fromRGB(21, 25, 34)),
-})
-logoGradient.Rotation = 45
-logoGradient.Parent = logoButton
-
-local main = Instance.new("Frame")
-main.Name = "Main"
-main.Size = UDim2.fromOffset(330, 305)
-main.Position = UDim2.new(0.5, -165, 0.5, -152)
-main.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
-main.BorderSizePixel = 0
-main.Active = true
-main.Draggable = true
-main.Parent = screenGui
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 10)
-mainCorner.Parent = main
-
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(75, 135, 255)
-mainStroke.Thickness = 1.5
-mainStroke.Parent = main
-
-local header = Instance.new("Frame")
-header.Name = "Header"
-header.Size = UDim2.new(1, 0, 0, 44)
-header.BackgroundColor3 = Color3.fromRGB(33, 38, 49)
-header.BorderSizePixel = 0
-header.Parent = main
-
-local headerCorner = Instance.new("UICorner")
-headerCorner.CornerRadius = UDim.new(0, 10)
-headerCorner.Parent = header
-
-local headerFix = Instance.new("Frame")
-headerFix.Size = UDim2.new(1, 0, 0, 10)
-headerFix.Position = UDim2.new(0, 0, 1, -10)
-headerFix.BackgroundColor3 = header.BackgroundColor3
-headerFix.BorderSizePixel = 0
-headerFix.Parent = header
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -90, 1, 0)
-title.Position = UDim2.fromOffset(14, 0)
-title.BackgroundTransparency = 1
-title.Font = Enum.Font.GothamBold
-title.Text = "EGG COLLECTOR"
-title.TextColor3 = Color3.fromRGB(240, 244, 255)
-title.TextSize = 16
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = header
-
-local minimizeButton = Instance.new("TextButton")
-minimizeButton.Size = UDim2.fromOffset(34, 28)
-minimizeButton.Position = UDim2.new(1, -76, 0, 8)
-minimizeButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
-minimizeButton.Text = "—"
-minimizeButton.Font = Enum.Font.GothamBold
-minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-minimizeButton.TextSize = 17
-minimizeButton.Parent = header
-
-local closeButton = Instance.new("TextButton")
-closeButton.Size = UDim2.fromOffset(34, 28)
-closeButton.Position = UDim2.new(1, -38, 0, 8)
-closeButton.BackgroundColor3 = Color3.fromRGB(190, 60, 70)
-closeButton.Text = "X"
-closeButton.Font = Enum.Font.GothamBold
-closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.TextSize = 14
-closeButton.Parent = header
-
-for _, button in ipairs({minimizeButton, closeButton}) do
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = button
-end
-
-local content = Instance.new("Frame")
-content.Name = "Content"
-content.Size = UDim2.new(1, -28, 1, -58)
-content.Position = UDim2.fromOffset(14, 51)
-content.BackgroundTransparency = 1
-content.Parent = main
-
-local toggleButton = Instance.new("TextButton")
-toggleButton.Size = UDim2.new(0.5, -4, 0, 42)
-toggleButton.Position = UDim2.fromOffset(0, 0)
-toggleButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
-toggleButton.Font = Enum.Font.GothamBold
-toggleButton.Text = "เริ่มเก็บ"
-toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-toggleButton.TextSize = 14
-toggleButton.Parent = content
-
-local toggleCorner = Instance.new("UICorner")
-toggleCorner.CornerRadius = UDim.new(0, 8)
-toggleCorner.Parent = toggleButton
-
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, 0, 0, 27)
-statusLabel.Position = UDim2.fromOffset(0, 50)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.Text = "สถานะ: ปิด"
-statusLabel.TextColor3 = Color3.fromRGB(170, 180, 200)
-statusLabel.TextSize = 13
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = content
-
-local keyLabel = Instance.new("TextLabel")
-keyLabel.Size = UDim2.new(1, 0, 0, 23)
-keyLabel.Position = UDim2.fromOffset(0, 80)
-keyLabel.BackgroundTransparency = 1
-keyLabel.Font = Enum.Font.Gotham
-keyLabel.Text = "L = พับเป็น Logo / เปิดหน้าต่าง"
-keyLabel.TextColor3 = Color3.fromRGB(105, 150, 245)
-keyLabel.TextSize = 12
-keyLabel.TextXAlignment = Enum.TextXAlignment.Left
-keyLabel.Parent = content
-
-local zoneButton = Instance.new("TextButton")
-zoneButton.Size = UDim2.new(1, 0, 0, 38)
-zoneButton.Position = UDim2.fromOffset(0, 110)
-zoneButton.BackgroundColor3 = Color3.fromRGB(64, 105, 190)
-zoneButton.Font = Enum.Font.GothamBold
-zoneButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-zoneButton.TextSize = 14
-zoneButton.Parent = content
-
-local zoneButtonCorner = Instance.new("UICorner")
-zoneButtonCorner.CornerRadius = UDim.new(0, 8)
-zoneButtonCorner.Parent = zoneButton
-
-local hideRenderedButton = Instance.new("TextButton")
-hideRenderedButton.Size = UDim2.new(1, 0, 0, 38)
-hideRenderedButton.Position = UDim2.fromOffset(0, 155)
-hideRenderedButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
-hideRenderedButton.Font = Enum.Font.GothamBold
-hideRenderedButton.Text = "ซ่อนสัตว์และไข่: OFF"
-hideRenderedButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-hideRenderedButton.TextSize = 14
-hideRenderedButton.Parent = content
-
-local hideRenderedCorner = Instance.new("UICorner")
-hideRenderedCorner.CornerRadius = UDim.new(0, 8)
-hideRenderedCorner.Parent = hideRenderedButton
-
-local sizeFilterButton = Instance.new("TextButton")
-sizeFilterButton.Size = UDim2.new(1, 0, 0, 38)
-sizeFilterButton.Position = UDim2.fromOffset(0, 200)
-sizeFilterButton.BackgroundColor3 = Color3.fromRGB(110, 75, 175)
-sizeFilterButton.Font = Enum.Font.GothamBold
-sizeFilterButton.Text = "Filter Hitbox Size: > 0"
-sizeFilterButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-sizeFilterButton.TextSize = 14
-sizeFilterButton.Parent = content
-
-local sizeFilterCorner = Instance.new("UICorner")
-sizeFilterCorner.CornerRadius = UDim.new(0, 8)
-sizeFilterCorner.Parent = sizeFilterButton
-
-local autoFarmButton = Instance.new("TextButton")
-autoFarmButton.Size = UDim2.new(0.5, -4, 0, 42)
-autoFarmButton.Position = UDim2.new(0.5, 4, 0, 0)
-autoFarmButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
-autoFarmButton.Font = Enum.Font.GothamBold
-autoFarmButton.Text = "Auto Farm: OFF"
-autoFarmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-autoFarmButton.TextSize = 14
-autoFarmButton.Parent = content
-
-local autoFarmCorner = Instance.new("UICorner")
-autoFarmCorner.CornerRadius = UDim.new(0, 8)
-autoFarmCorner.Parent = autoFarmButton
-
-local sizeFilterPanel = Instance.new("Frame")
-sizeFilterPanel.Name = "SizeFilterPanel"
-sizeFilterPanel.Size = UDim2.fromOffset(150, 256)
-sizeFilterPanel.Position = UDim2.new(0, -160, 0, 110)
-sizeFilterPanel.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
-sizeFilterPanel.BorderSizePixel = 0
-sizeFilterPanel.Visible = false
-sizeFilterPanel.Parent = main
-
-local sizePanelCorner = Instance.new("UICorner")
-sizePanelCorner.CornerRadius = UDim.new(0, 10)
-sizePanelCorner.Parent = sizeFilterPanel
-
-local sizePanelStroke = Instance.new("UIStroke")
-sizePanelStroke.Color = Color3.fromRGB(165, 100, 235)
-sizePanelStroke.Thickness = 1.5
-sizePanelStroke.Parent = sizeFilterPanel
-
-local sizeTitle = Instance.new("TextLabel")
-sizeTitle.Size = UDim2.new(1, 0, 0, 34)
-sizeTitle.BackgroundTransparency = 1
-sizeTitle.Font = Enum.Font.GothamBold
-sizeTitle.Text = "เลือกขนาดไข่"
-sizeTitle.TextColor3 = Color3.fromRGB(240, 244, 255)
-sizeTitle.TextSize = 13
-sizeTitle.Parent = sizeFilterPanel
-
-local sizeOptionButtons = {}
-
-local function refreshSizeFilterUI()
-	sizeFilterButton.Text = string.format(
-		"Filter Hitbox Size: > %g",
-		selectedSizeThreshold
+	return math.max(
+		hitbox.Size.X,
+		hitbox.Size.Y,
+		hitbox.Size.Z
 	)
-
-	for threshold, button in pairs(sizeOptionButtons) do
-		local selected = threshold == selectedSizeThreshold
-		button.Text = (selected and "[✓] " or "[ ] ") .. "> " .. threshold
-		button.BackgroundColor3 = selected
-			and Color3.fromRGB(105, 65, 165)
-			or Color3.fromRGB(48, 53, 65)
-	end
 end
 
-for index, threshold in ipairs({0, 1, 1.5, 2, 2.5, 3}) do
-	local option = Instance.new("TextButton")
-	option.Size = UDim2.new(1, -12, 0, 31)
-	option.Position = UDim2.fromOffset(6, 35 + (index - 1) * 36)
-	option.BorderSizePixel = 0
-	option.Font = Enum.Font.GothamMedium
-	option.TextColor3 = Color3.fromRGB(255, 255, 255)
-	option.TextSize = 13
-	option.Parent = sizeFilterPanel
-
-	local optionCorner = Instance.new("UICorner")
-	optionCorner.CornerRadius = UDim.new(0, 6)
-	optionCorner.Parent = option
-
-	sizeOptionButtons[threshold] = option
-	option.MouseButton1Click:Connect(function()
-		selectedSizeThreshold = threshold
-		sizeFilterPanel.Visible = false
-		refreshSizeFilterUI()
-	end)
-end
-
-sizeFilterButton.MouseButton1Click:Connect(function()
-	sizeFilterPanel.Visible = not sizeFilterPanel.Visible
-end)
-
-refreshSizeFilterUI()
-
-local zonePanel = Instance.new("Frame")
-zonePanel.Name = "ZonePanel"
-zonePanel.Size = UDim2.fromOffset(250, 375)
-zonePanel.Position = UDim2.new(1, 10, 0, 0)
-zonePanel.BackgroundColor3 = Color3.fromRGB(22, 25, 32)
-zonePanel.BorderSizePixel = 0
-zonePanel.Visible = false
-zonePanel.Parent = main
-
-local zonePanelCorner = Instance.new("UICorner")
-zonePanelCorner.CornerRadius = UDim.new(0, 10)
-zonePanelCorner.Parent = zonePanel
-
-local zonePanelStroke = Instance.new("UIStroke")
-zonePanelStroke.Color = Color3.fromRGB(75, 135, 255)
-zonePanelStroke.Thickness = 1.5
-zonePanelStroke.Parent = zonePanel
-
-local zoneTitle = Instance.new("TextLabel")
-zoneTitle.Size = UDim2.new(1, -20, 0, 38)
-zoneTitle.Position = UDim2.fromOffset(10, 5)
-zoneTitle.BackgroundTransparency = 1
-zoneTitle.Font = Enum.Font.GothamBold
-zoneTitle.Text = "เลือก Zone (เลือกได้หลายโซน)"
-zoneTitle.TextColor3 = Color3.fromRGB(240, 244, 255)
-zoneTitle.TextSize = 14
-zoneTitle.TextXAlignment = Enum.TextXAlignment.Left
-zoneTitle.Parent = zonePanel
-
-local selectAllButton = Instance.new("TextButton")
-selectAllButton.Size = UDim2.new(0.5, -13, 0, 32)
-selectAllButton.Position = UDim2.fromOffset(10, 44)
-selectAllButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
-selectAllButton.Font = Enum.Font.GothamBold
-selectAllButton.Text = "เลือกทั้งหมด"
-selectAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-selectAllButton.TextSize = 12
-selectAllButton.Parent = zonePanel
-
-local clearAllButton = Instance.new("TextButton")
-clearAllButton.Size = UDim2.new(0.5, -13, 0, 32)
-clearAllButton.Position = UDim2.new(0.5, 3, 0, 44)
-clearAllButton.BackgroundColor3 = Color3.fromRGB(180, 65, 75)
-clearAllButton.Font = Enum.Font.GothamBold
-clearAllButton.Text = "ยกเลิกทั้งหมด"
-clearAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-clearAllButton.TextSize = 12
-clearAllButton.Parent = zonePanel
-
-for _, button in ipairs({selectAllButton, clearAllButton}) do
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 7)
-	corner.Parent = button
-end
-
-local zoneList = Instance.new("ScrollingFrame")
-zoneList.Size = UDim2.new(1, -20, 1, -91)
-zoneList.Position = UDim2.fromOffset(10, 83)
-zoneList.BackgroundColor3 = Color3.fromRGB(30, 34, 43)
-zoneList.BorderSizePixel = 0
-zoneList.ScrollBarThickness = 5
-zoneList.CanvasSize = UDim2.fromOffset(0, #ZONES * 36 + 8)
-zoneList.Parent = zonePanel
-
-local zoneListCorner = Instance.new("UICorner")
-zoneListCorner.CornerRadius = UDim.new(0, 8)
-zoneListCorner.Parent = zoneList
-
-local zoneButtons = {}
-
-local function countSelectedZones()
-	local count = 0
-	for _, zone in ipairs(ZONES) do
-		if selectedZones[zone.Name] then
-			count += 1
-		end
+local function getAllEggs()
+	local folder = Workspace:FindFirstChild("AreaEggSlotsClient")
+	local eggRecords = {}
+	if not folder then
+		return {}
 	end
-	return count
-end
-
-local function refreshZoneUI()
-	local selectedCount = countSelectedZones()
-	zoneButton.Text = string.format("เลือก Zone: %d/%d", selectedCount, #ZONES)
-
-	for zoneName, button in pairs(zoneButtons) do
-		local selected = selectedZones[zoneName]
-		button.Text = (selected and "[✓] " or "[ ] ") .. zoneName
-		button.BackgroundColor3 = selected
-			and Color3.fromRGB(54, 115, 90)
-			or Color3.fromRGB(48, 53, 65)
-	end
-end
-
-for index, zone in ipairs(ZONES) do
-	local zoneOption = Instance.new("TextButton")
-	zoneOption.Size = UDim2.new(1, -10, 0, 31)
-	zoneOption.Position = UDim2.fromOffset(5, 4 + (index - 1) * 36)
-	zoneOption.BorderSizePixel = 0
-	zoneOption.Font = Enum.Font.GothamMedium
-	zoneOption.TextColor3 = Color3.fromRGB(245, 245, 250)
-	zoneOption.TextSize = 13
-	zoneOption.TextXAlignment = Enum.TextXAlignment.Left
-	zoneOption.Parent = zoneList
-
-	local optionPadding = Instance.new("UIPadding")
-	optionPadding.PaddingLeft = UDim.new(0, 10)
-	optionPadding.Parent = zoneOption
-
-	local optionCorner = Instance.new("UICorner")
-	optionCorner.CornerRadius = UDim.new(0, 6)
-	optionCorner.Parent = zoneOption
-
-	zoneButtons[zone.Name] = zoneOption
-	zoneOption.MouseButton1Click:Connect(function()
-		selectedZones[zone.Name] = not selectedZones[zone.Name]
-		refreshZoneUI()
-	end)
-end
-
-zoneButton.MouseButton1Click:Connect(function()
-	zonePanel.Visible = not zonePanel.Visible
-	sizeFilterPanel.Visible = false
-end)
-
-selectAllButton.MouseButton1Click:Connect(function()
-	for _, zone in ipairs(ZONES) do
-		selectedZones[zone.Name] = true
-	end
-	refreshZoneUI()
-end)
-
-clearAllButton.MouseButton1Click:Connect(function()
-	for _, zone in ipairs(ZONES) do
-		selectedZones[zone.Name] = false
-	end
-	refreshZoneUI()
-end)
-
-refreshZoneUI()
-
-local function updateRunningUI()
-	if running then
-		toggleButton.Text = "หยุดเก็บ"
-		toggleButton.BackgroundColor3 = Color3.fromRGB(200, 65, 75)
-	else
-		toggleButton.Text = "เริ่มเก็บ"
-		toggleButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
-	end
-end
-
-local function updateAutoFarmUI()
-	if autoFarmEnabled then
-		autoFarmButton.Text = "Auto Farm: ON"
-		autoFarmButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
-	else
-		autoFarmButton.Text = "Auto Farm: OFF"
-		autoFarmButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
-	end
-end
-
-local function pressE()
-	VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-	task.wait(0.01)
-	VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-end
-
-local function forceReturn(rootPart, returnCFrame)
-	VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-	if rootPart and rootPart.Parent and returnCFrame then
-		rootPart.CFrame = returnCFrame
-	end
-end
-
-local function collectEgg(egg, index, token, rootPart, originalCFrame)
-	if not running or token ~= runToken or not egg or not egg.Parent or not rootPart.Parent then
-		return false
-	end
-
-	local eggCFrame
-
-	if egg:IsA("Model") then
-		eggCFrame = egg:GetBoundingBox()
-	elseif egg:IsA("BasePart") then
-		eggCFrame = egg.CFrame
-	else
-		return false
-	end
-
-	-- วาร์ปเข้าศูนย์กลางไข่โดยตรง ป้องกันไข่ใหญ่ดันตัวออกนอกแมพ
-	local teleportCFrame = CFrame.new(eggCFrame.Position)
-	local prompts = {}
-
-	for _, object in ipairs(egg:GetDescendants()) do
-		if object:IsA("ProximityPrompt") then
-			makePromptInstant(object)
-			table.insert(prompts, object)
-		end
-	end
-
-	local currentZone = getObjectZone(egg)
-	statusLabel.Text = string.format(
-		"สถานะ: %s | ใบที่ %d - %s",
-		currentZone and currentZone.Name or "Unknown Zone",
-		index,
-		egg.Name
-	)
-
-	-- ล็อกตำแหน่ง 2 ช่วงต่อเฟรมเพื่อกันเกมดึงตัวกลับ
-	local function lockAtEgg()
-		if running
-			and token == runToken
-			and rootPart.Parent
-			and egg.Parent then
-
-			rootPart.CFrame = teleportCFrame
-			rootPart.AssemblyLinearVelocity = Vector3.zero
-			rootPart.AssemblyAngularVelocity = Vector3.zero
-		end
-	end
-
-	lockAtEgg()
-	local steppedLock = RunService.Stepped:Connect(lockAtEgg)
-	local heartbeatLock = RunService.Heartbeat:Connect(lockAtEgg)
-	RunService.Heartbeat:Wait()
-
-	local startTime = os.clock()
-	while running and token == runToken and os.clock() - startTime < TELEPORT_TIME do
-		if not rootPart.Parent or not egg.Parent then
-			break
-		end
-
-		rootPart.CFrame = teleportCFrame
-
-		for _, prompt in ipairs(prompts) do
-			if prompt.Parent and prompt.Enabled then
-				makePromptInstant(prompt)
-				triggerPromptInstant(prompt)
-			end
-		end
-
-		pressE()
-		-- pressE มี yield 0.01 อยู่แล้ว จึงวนรอบต่อทันทีโดยไม่หน่วงเพิ่ม
-	end
-
-	steppedLock:Disconnect()
-	heartbeatLock:Disconnect()
-
-	forceReturn(rootPart, originalCFrame)
-	task.wait(WAIT_BETWEEN_EGGS)
-	return running and token == runToken
-end
-
-local function stopCollecting(message)
-	running = false
-	runToken += 1
-	updateRunningUI()
-	statusLabel.Text = message or "สถานะ: หยุดแล้ว"
-	VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-end
-
-local function findEggHitbox(egg)
-	if egg:IsA("BasePart") and string.lower(egg.Name) == "hitbox" then
-		return egg
-	end
-
-	for _, object in ipairs(egg:GetDescendants()) do
-		if object:IsA("BasePart")
-			and string.lower(object.Name) == "hitbox" then
-
-			return object
-		end
-	end
-	return nil
-end
-
-local function getHitboxSizeData(egg)
-	local hitbox = findEggHitbox(egg)
-	if not hitbox then
-		return 0, 0
-	end
-
-	local size = hitbox.Size
-	local maxSize = math.max(size.X, size.Y, size.Z)
-	local volume = size.X * size.Y * size.Z
-	return maxSize, volume
-end
-
-local function getSortedSelectedEggs()
-	local eggs = {}
-	local eggSortData = {}
-	local originalIndex = 0
 
 	for _, object in ipairs(folder:GetChildren()) do
 		if object:IsA("Model") or object:IsA("BasePart") then
-			originalIndex += 1
-			local zone = getObjectZone(object)
-			if zone and selectedZones[zone.Name] then
-				local maxSize, volume = getHitboxSizeData(object)
-				if maxSize > selectedSizeThreshold then
-					eggSortData[object] = {
-						MaxSize = maxSize,
-						Volume = volume,
-						OriginalIndex = originalIndex,
-					}
-					table.insert(eggs, object)
+			local position = getObjectPosition(object)
+			local hitboxSize = getHitboxSize(object)
+
+			if position and hitboxSize then
+
+				for zoneIndex, zone in ipairs(ZONES) do
+					if selectedZones[zone.Name]
+						and position.X >= zone.MinX
+						and position.X <= zone.MaxX
+						and hitboxSize > selectedHitboxSize then
+
+						table.insert(eggRecords, {
+							Object = object,
+							Size = hitboxSize,
+							ZoneIndex = zoneIndex,
+						})
+						break
+					end
 				end
 			end
 		end
 	end
 
-
-	-- รวมไข่จากทุก Zone ที่เลือก แล้วเรียง Size ใหญ่ที่สุดก่อนแบบ Global
-	table.sort(eggs, function(eggA, eggB)
-		local dataA = eggSortData[eggA]
-		local dataB = eggSortData[eggB]
-
-		if dataA.MaxSize ~= dataB.MaxSize then
-			return dataA.MaxSize > dataB.MaxSize
+	table.sort(eggRecords, function(a, b)
+		-- ขนาดใหญ่ไปเล็กเป็นลำดับหลัก
+		if a.Size ~= b.Size then
+			return a.Size > b.Size
 		end
-		if dataA.Volume ~= dataB.Volume then
-			return dataA.Volume > dataB.Volume
+
+		-- หากขนาดเท่ากัน ให้ Zone หลังสุดมาก่อน
+		if a.ZoneIndex ~= b.ZoneIndex then
+			return a.ZoneIndex > b.ZoneIndex
 		end
-		return dataA.OriginalIndex < dataB.OriginalIndex
+
+		return a.Object.Name < b.Object.Name
 	end)
+
+	local eggs = {}
+	for _, record in ipairs(eggRecords) do
+		table.insert(eggs, record.Object)
+	end
 
 	return eggs
 end
 
-local function startCollecting(continuousMode)
-	local selectedZoneCount = countSelectedZones()
-	if selectedZoneCount == 0 then
-		statusLabel.Text = "สถานะ: กรุณาเลือกอย่างน้อย 1 Zone"
+local function runToCFrame(targetCFrame, runId, arrivalDistance)
+	local root = getRootPart()
+	local humanoid = getHumanoid()
+	if not root or not humanoid then
 		return false
 	end
 
-	local _, rootPart = getCharacterParts()
-	local originalCFrame = rootPart.CFrame
-	local eggs = getSortedSelectedEggs()
+	local targetPosition = targetCFrame.Position
+	local reachDistance = arrivalDistance or Config.ArrivalDistance
+	local startingDistance = (targetPosition - root.Position).Magnitude
+	local timeout = math.max(
+		15,
+		(startingDistance / Config.FindEggSpeed) * 4 + 5
+	)
+	local startedAt = os.clock()
+	local lastMoveAt = 0
+	humanoid.WalkSpeed = Config.FindEggSpeed
+	humanoid:MoveTo(targetPosition)
 
-	if #eggs == 0 and not continuousMode then
-		statusLabel.Text = string.format(
-			"สถานะ: ไม่พบไข่ Size > %g ใน Zone ที่เลือก",
-			selectedSizeThreshold
-		)
+	while Config.FindEggEnabled and runId == findEggRunId and root.Parent do
+		local offset = targetPosition - root.Position
+		local distance = offset.Magnitude
+		if distance <= reachDistance then
+			root.AssemblyLinearVelocity = Vector3.zero
+			humanoid:MoveTo(root.Position)
+			return true
+		end
+
+		if os.clock() - startedAt >= timeout then
+			humanoid:MoveTo(root.Position)
+			return false
+		end
+
+		if os.clock() - lastMoveAt >= 0.25 then
+			humanoid.WalkSpeed = Config.FindEggSpeed
+			humanoid:MoveTo(targetPosition)
+			lastMoveAt = os.clock()
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	humanoid:MoveTo(root.Position)
+	return false
+end
+
+local function getLowFlyY(position, root, humanoid)
+	local character = getCharacter()
+	local eggFolder = Workspace:FindFirstChild("AreaEggSlotsClient")
+	local excluded = {}
+	if character then table.insert(excluded, character) end
+	if eggFolder then table.insert(excluded, eggFolder) end
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = excluded
+	raycastParams.IgnoreWater = false
+
+	local origin = Vector3.new(position.X, position.Y + 100, position.Z)
+	local result = Workspace:Raycast(
+		origin,
+		Vector3.new(0, -500, 0),
+		raycastParams
+	)
+
+	if not result then
+		return position.Y
+	end
+
+	-- ลดระดับบินลงจากค่าเดิมอีก 2 studs
+	return result.Position.Y
+		+ humanoid.HipHeight
+		+ (root.Size.Y / 2)
+		- 1
+end
+
+local function flyLowToCFrame(targetCFrame, runId, arrivalDistance)
+	local root = getRootPart()
+	local humanoid = getHumanoid()
+	if not root or not humanoid then
 		return false
 	end
 
-	running = true
-	runToken += 1
-	local token = runToken
-	local collectedCount = 0
-	local completedBecauseEmpty = false
-	updateRunningUI()
-	if #eggs > 0 then
-		statusLabel.Text = string.format(
-			"สถานะ: พบ %d ใบ | %d Zone | Size > %g",
-			#eggs,
-			selectedZoneCount,
-			selectedSizeThreshold
+	local targetPosition = targetCFrame.Position
+	local reachDistance = arrivalDistance or Config.ArrivalDistance
+	humanoid:MoveTo(root.Position)
+	humanoid.AutoRotate = false
+
+	while Config.FindEggEnabled and runId == findEggRunId and root.Parent do
+		local flatOffset = Vector3.new(
+			targetPosition.X - root.Position.X,
+			0,
+			targetPosition.Z - root.Position.Z
 		)
-	else
-		statusLabel.Text = "สถานะ: Auto Farm รอไข่เกิดใหม่..."
+		local distance = flatOffset.Magnitude
+
+		if distance <= reachDistance then
+			local finalY = getLowFlyY(targetPosition, root, humanoid)
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.CFrame = CFrame.new(
+				targetPosition.X,
+				finalY,
+				targetPosition.Z
+			)
+			humanoid.AutoRotate = true
+			return true
+		end
+
+		local deltaTime = RunService.Heartbeat:Wait()
+		local step = math.min(distance, Config.FindEggSpeed * deltaTime)
+		local flatDirection = flatOffset.Unit
+		local nextFlatPosition = Vector3.new(
+			root.Position.X + flatDirection.X * step,
+			root.Position.Y,
+			root.Position.Z + flatDirection.Z * step
+		)
+		local nextY = getLowFlyY(nextFlatPosition, root, humanoid)
+		local nextPosition = Vector3.new(
+			nextFlatPosition.X,
+			nextY,
+			nextFlatPosition.Z
+		)
+		local lookAt = nextPosition + Vector3.new(
+			flatDirection.X,
+			0,
+			flatDirection.Z
+		)
+
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.CFrame = CFrame.lookAt(nextPosition, lookAt)
 	end
 
-	task.spawn(function()
-		while running and token == runToken do
-			if not rootPart.Parent then
-				statusLabel.Text = "สถานะ: ตัวละครหาย หยุดเก็บไข่"
-				break
-			end
+	humanoid.AutoRotate = true
+	return false
+end
 
-			-- สแกนใหม่ทุกครั้ง ป้องกันรายการเดิมหมดอายุเมื่อไข่ถูกลบ/สร้างใหม่
-			eggs = getSortedSelectedEggs()
+local function moveToCFrame(targetCFrame, runId, arrivalDistance)
+	if Config.FindEggMode == "FLY" then
+		return flyLowToCFrame(targetCFrame, runId, arrivalDistance)
+	end
 
-			if #eggs == 0 then
-				if continuousMode then
-					statusLabel.Text = string.format(
-						"สถานะ: Auto Farm รอไข่ Size > %g...",
-						selectedSizeThreshold
-					)
-					task.wait(0.25)
-					continue
-				end
+	return runToCFrame(targetCFrame, runId, arrivalDistance)
+end
 
-				statusLabel.Text = "สถานะ: กำลังตรวจยืนยันว่าไข่หมด..."
-				local emptyStart = os.clock()
-				local foundNewEgg = false
+local function stopFindEgg()
+	Config.FindEggEnabled = false
+	findEggRunId += 1
+	refreshWalkSpeedLock()
+	local humanoid = getHumanoid()
+	local root = getRootPart()
+	if humanoid and root then
+		humanoid:MoveTo(root.Position)
+	end
+end
 
-				while running
-					and token == runToken
-					and os.clock() - emptyStart < EMPTY_CONFIRM_TIME do
+local function startFindEgg(onProgress, onFinished)
+	stopFindEgg()
+	setManualFlyEnabled(false)
+	setInstantPromptEnabled(true)
+	local eggs = getAllEggs()
+	local humanoid = getHumanoid()
+	if not humanoid then
+		onFinished(false, "ไม่พบ Character")
+		return
+	end
+	if #eggs == 0 then
+		onFinished(false, "ไม่พบ Object ใน Zone ที่เลือก")
+		return
+	end
 
-					task.wait(0.15)
-					if #getSortedSelectedEggs() > 0 then
-						foundNewEgg = true
+	Config.FindEggEnabled = true
+	refreshWalkSpeedLock()
+	findEggRunId += 1
+	local runId = findEggRunId
+	findEggThread = task.spawn(function()
+		local restoreWalkSpeed = Config.WalkSpeedEnabled
+			and Config.WalkSpeed
+			or Config.NormalWalkSpeed
+		humanoid.AutoRotate = true
+
+		for index, egg in ipairs(eggs) do
+			if not Config.FindEggEnabled or runId ~= findEggRunId then break end
+			if egg and egg.Parent then
+				local targetName = egg.Name
+				local _, targetZoneName = getZoneFromPosition(
+					getObjectPosition(egg)
+				)
+				local attempts = 0
+				local returnCFrame = index % 2 == 1
+					and FLY_RETURN_LEFT
+					or FLY_RETURN_RIGHT
+				local side = index % 2 == 1 and "ซ้าย" or "ขวา"
+
+				while Config.FindEggEnabled
+					and runId == findEggRunId
+					and egg
+					and egg.Parent
+					and attempts < Config.TargetRetryLimit do
+
+					attempts += 1
+					local moveText = Config.FindEggMode == "FLY"
+						and "กำลังบินไป"
+						or "กำลังวิ่งไป"
+
+					if attempts > 1 then
+						moveText = "หาไข่ใบเดิมใหม่ ครั้งที่ "
+							.. tostring(attempts)
+					end
+
+					onProgress(
+					index,
+					#eggs,
+					moveText,
+					targetName,
+					egg,
+					"Egg Target"
+				)
+					local position = getObjectPosition(egg)
+					if not position
+						or not moveToCFrame(
+							CFrame.new(position),
+							runId,
+							Config.EggArrivalDistance
+						) then
+						break
+					end
+
+					onProgress(
+					index,
+					#eggs,
+					"กำลังเก็บ",
+					targetName,
+					egg,
+					"Collect Egg"
+				)
+					task.wait(0.05)
+					pressEOnce()
+					task.wait(Config.CollectWaitTime)
+
+					-- เลือกจุดพักกลางตามกลุ่ม Zone
+					local zoneWaypoint =
+						ZONE_RETURN_WAYPOINTS[targetZoneName]
+					if zoneWaypoint then
+						local waypointLabel =
+							(targetZoneName == "Abyss Ocean"
+								or targetZoneName == "Cosmic")
+							and "Abyss/Cosmic Waypoint"
+							or "Volcano/Prehistoric Waypoint"
+						onProgress(
+							index,
+							#eggs,
+							"กำลังไปจุดพักกลาง " .. targetZoneName,
+							targetName,
+							egg,
+							waypointLabel
+						)
+						if not moveToCFrame(
+							zoneWaypoint,
+							runId
+						) then
+							break
+						end
+					end
+
+					-- กลับถึงจุดพักก่อน แล้วจึงตรวจไข่เป้าหมาย
+					local returnText = Config.FindEggMode == "FLY"
+						and "กำลังบินกลับจุด "
+						or "กำลังวิ่งกลับจุด "
+					onProgress(
+					index,
+					#eggs,
+					returnText .. side,
+					targetName,
+					egg,
+					"Return " .. side
+				)
+					if not moveToCFrame(returnCFrame, runId) then
+						break
+					end
+					task.wait(Config.ReturnWaitTime)
+
+					if egg and egg.Parent then
+						onProgress(
+							index,
+							#eggs,
+							"กลับถึงจุดแล้ว ไข่เดิมยังอยู่ กำลังเก็บใหม่",
+							targetName,
+							egg,
+							"Retry Egg Target"
+						)
+						task.wait(Config.TargetRetryDelay)
+					else
 						break
 					end
 				end
-
-				if not foundNewEgg then
-					completedBecauseEmpty = true
-					break
-				end
-				continue
-			end
-
-			local egg = eggs[1]
-			local collected = collectEgg(
-				egg,
-				collectedCount + 1,
-				token,
-				rootPart,
-				originalCFrame
-			)
-
-			if collected then
-				collectedCount += 1
-			else
-				-- Object อาจถูกผู้เล่นอื่นเก็บก่อน ให้ข้ามและสแกนใหม่
-				task.wait(0.05)
-			end
-
-			if running and token == runToken then
-				local delayStart = os.clock()
-				while running
-					and token == runToken
-					and os.clock() - delayStart < DELAY_NEXT_ROUND do
-
-					rootPart.CFrame = originalCFrame
-					task.wait(0.05)
-				end
 			end
 		end
 
-		forceReturn(rootPart, originalCFrame)
-
-		if token == runToken then
-			running = false
-			if continuousMode then
-				autoFarmEnabled = false
-				updateAutoFarmUI()
-			end
-			updateRunningUI()
-			if completedBecauseEmpty then
-				statusLabel.Text = string.format(
-					"สถานะ: ไข่ใน Zone ที่เลือกหมดแล้ว เก็บ %d รอบ",
-					collectedCount
-				)
-			end
+		if humanoid and humanoid.Parent then
+			humanoid.WalkSpeed = restoreWalkSpeed
+		end
+		local completed = Config.FindEggEnabled and runId == findEggRunId
+		if completed then
+			Config.FindEggEnabled = false
+			refreshWalkSpeedLock()
+		end
+		if runId == findEggRunId then
+			findEggThread = nil
+			onFinished(completed, completed and "เก็บครบทุก Object แล้ว" or "หยุดแล้ว")
 		end
 	end)
-
-	return true
 end
 
-toggleButton.MouseButton1Click:Connect(function()
-	if running then
-		autoFarmEnabled = false
-		updateAutoFarmUI()
-		stopCollecting("สถานะ: หยุดโดยผู้ใช้")
-	else
-		startCollecting(false)
-	end
-end)
+-- GUI
+local oldGui = playerGui:FindFirstChild("CharacterFindEggUI")
+if oldGui then oldGui:Destroy() end
 
-autoFarmButton.MouseButton1Click:Connect(function()
-	if autoFarmEnabled then
-		autoFarmEnabled = false
-		updateAutoFarmUI()
-		stopCollecting("สถานะ: ปิด Auto Farm")
-		return
-	end
+UI.ScreenGui = Instance.new("ScreenGui")
+UI.ScreenGui.Name = "CharacterFindEggUI"
+UI.ScreenGui.ResetOnSpawn = false
+UI.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+UI.ScreenGui.Parent = playerGui
 
-	if running then
-		stopCollecting("สถานะ: เปลี่ยนเป็น Auto Farm")
-	end
+UI.LogoButton = Instance.new("TextButton")
+UI.LogoButton.Name = "LogoButton"
+UI.LogoButton.Size = UDim2.fromOffset(62, 62)
+UI.LogoButton.AnchorPoint = Vector2.new(0.5, 0)
+UI.LogoButton.Position = UDim2.new(0.5, 0, 0, 100)
+UI.LogoButton.BackgroundColor3 = Color3.fromRGB(255, 205, 35)
+UI.LogoButton.BorderSizePixel = 0
+UI.LogoButton.Text = "EGG"
+UI.LogoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.LogoButton.TextSize = 17
+UI.LogoButton.Font = Enum.Font.GothamBold
+UI.LogoButton.Visible = false
+UI.LogoButton.Active = true
+UI.LogoButton.ZIndex = 1000
+UI.LogoButton.Parent = UI.ScreenGui
+Instance.new("UICorner", UI.LogoButton).CornerRadius = UDim.new(1, 0)
 
-	autoFarmEnabled = true
-	updateAutoFarmUI()
+local logoStroke = Instance.new("UIStroke")
+logoStroke.Color = Color3.fromRGB(220, 165, 20)
+logoStroke.Thickness = 2
+logoStroke.Parent = UI.LogoButton
 
-	if not startCollecting(true) then
-		autoFarmEnabled = false
-		updateAutoFarmUI()
-	end
-end)
+local logoPadding = Instance.new("UIPadding")
+logoPadding.PaddingTop = UDim.new(0, 7)
+logoPadding.PaddingBottom = UDim.new(0, 7)
+logoPadding.PaddingLeft = UDim.new(0, 7)
+logoPadding.PaddingRight = UDim.new(0, 7)
+logoPadding.Parent = UI.LogoButton
 
-hideRenderedButton.MouseButton1Click:Connect(function()
-	setRenderedHidden(not hideRenderedEnabled)
+UI.Main = Instance.new("Frame")
+UI.Main.Size = UDim2.fromOffset(440, 620)
+UI.Main.Position = UDim2.new(0.5, -220, 0.5, -310)
+UI.Main.BackgroundColor3 = Color3.fromRGB(28, 28, 35)
+UI.Main.BorderSizePixel = 0
+UI.Main.Active = true
+UI.Main.Parent = UI.ScreenGui
+Instance.new("UICorner", UI.Main).CornerRadius = UDim.new(0, 12)
 
-	if hideRenderedEnabled then
-		hideRenderedButton.Text = "ซ่อนสัตว์และไข่: ON"
-		hideRenderedButton.BackgroundColor3 = Color3.fromRGB(45, 175, 105)
-	else
-		hideRenderedButton.Text = "ซ่อนสัตว์และไข่: OFF"
-		hideRenderedButton.BackgroundColor3 = Color3.fromRGB(55, 61, 75)
-	end
-end)
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 50)
+titleBar.BackgroundColor3 = Color3.fromRGB(37, 37, 46)
+titleBar.BorderSizePixel = 0
+titleBar.Active = true
+titleBar.Parent = UI.Main
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
 
-local function minimizeToLogo()
-	if minimized then
-		return
-	end
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -110, 1, 0)
+title.Position = UDim2.fromOffset(18, 0)
+title.BackgroundTransparency = 1
+title.Text = "EGG"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 18
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
 
-	minimized = true
-	zonePanel.Visible = false
-	sizeFilterPanel.Visible = false
-	logoButton.Position = main.Position
-	main.Visible = false
-	logoButton.Visible = true
+local minimizeButton = Instance.new("TextButton")
+minimizeButton.Size = UDim2.fromOffset(36, 30)
+minimizeButton.Position = UDim2.new(1, -84, 0, 10)
+minimizeButton.Text = "—"
+minimizeButton.TextSize = 18
+minimizeButton.TextColor3 = Color3.new(1, 1, 1)
+minimizeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 77)
+minimizeButton.BorderSizePixel = 0
+minimizeButton.Parent = titleBar
+Instance.new("UICorner", minimizeButton).CornerRadius = UDim.new(0, 7)
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.fromOffset(36, 30)
+closeButton.Position = UDim2.new(1, -43, 0, 10)
+closeButton.Text = "X"
+closeButton.TextSize = 14
+closeButton.Font = Enum.Font.GothamBold
+closeButton.TextColor3 = Color3.new(1, 1, 1)
+closeButton.BackgroundColor3 = Color3.fromRGB(190, 55, 60)
+closeButton.BorderSizePixel = 0
+closeButton.Parent = titleBar
+Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 7)
+
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.new(0, 95, 1, -145)
+sidebar.Position = UDim2.fromOffset(10, 57)
+sidebar.BackgroundColor3 = Color3.fromRGB(34, 34, 42)
+sidebar.BorderSizePixel = 0
+sidebar.Parent = UI.Main
+Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0, 10)
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1, -120, 1, -150)
+contentFrame.Position = UDim2.fromOffset(110, 60)
+contentFrame.BackgroundTransparency = 1
+contentFrame.ClipsDescendants = true
+contentFrame.Parent = UI.Main
+
+UI.GlobalStatusFrame = Instance.new("Frame")
+UI.GlobalStatusFrame.Name = "FindEggGlobalStatus"
+UI.GlobalStatusFrame.Size = UDim2.new(1, -20, 0, 72)
+UI.GlobalStatusFrame.Position = UDim2.new(0, 10, 1, -82)
+UI.GlobalStatusFrame.BackgroundColor3 = Color3.fromRGB(34, 34, 42)
+UI.GlobalStatusFrame.BorderSizePixel = 0
+UI.GlobalStatusFrame.Parent = UI.Main
+Instance.new("UICorner", UI.GlobalStatusFrame).CornerRadius = UDim.new(0, 9)
+
+UI.GlobalStatusLabel = Instance.new("TextLabel")
+UI.GlobalStatusLabel.Size = UDim2.new(1, -16, 1, -10)
+UI.GlobalStatusLabel.Position = UDim2.fromOffset(8, 5)
+UI.GlobalStatusLabel.BackgroundTransparency = 1
+UI.GlobalStatusLabel.Text =
+	"Status: Ready | Egg: - | 0/0\n"
+	.. "Size: - | Zone: - | Destination: -"
+UI.GlobalStatusLabel.TextColor3 = Color3.fromRGB(230, 230, 235)
+UI.GlobalStatusLabel.TextSize = 11
+UI.GlobalStatusLabel.Font = Enum.Font.Gotham
+UI.GlobalStatusLabel.TextWrapped = true
+UI.GlobalStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.GlobalStatusLabel.TextYAlignment = Enum.TextYAlignment.Center
+UI.GlobalStatusLabel.Parent = UI.GlobalStatusFrame
+
+local pages = {}
+local tabButtons = {}
+
+local function createTab(name, order)
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, -16, 0, 42)
+	button.Position = UDim2.fromOffset(8, 10 + (order - 1) * 50)
+	button.BackgroundColor3 = Color3.fromRGB(56, 56, 68)
+	button.BorderSizePixel = 0
+	button.Text = name
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.TextSize = 14
+	button.Font = Enum.Font.GothamBold
+	button.Parent = sidebar
+	Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
+
+	local page = Instance.new("ScrollingFrame")
+	page.Size = UDim2.new(1, 0, 1, 0)
+	page.BackgroundTransparency = 1
+	page.BorderSizePixel = 0
+	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	page.CanvasSize = UDim2.new()
+	page.ScrollBarThickness = 5
+	page.Visible = false
+	page.Parent = contentFrame
+
+	local content = Instance.new("Frame")
+	content.Size = UDim2.new(1, -8, 0, 0)
+	content.AutomaticSize = Enum.AutomaticSize.Y
+	content.BackgroundTransparency = 1
+	content.Parent = page
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 10)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = content
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 10)
+	padding.PaddingBottom = UDim.new(0, 15)
+	padding.PaddingLeft = UDim.new(0, 8)
+	padding.PaddingRight = UDim.new(0, 8)
+	padding.Parent = content
+	pages[name], tabButtons[name] = page, button
+	return button, content
 end
 
-local function restoreFromLogo()
-	if not minimized then
-		return
-	end
+local characterTab, characterContent = createTab("Character", 1)
+local findEggTab, findEggContent = createTab("Find Egg", 2)
+local zonesTab, zonesContent = createTab("Zones", 3)
+local sizeTab, sizeContent = createTab("Size", 4)
 
-	minimized = false
-	main.Position = logoButton.Position
-	logoButton.Visible = false
-	main.Visible = true
+local function showTab(name)
+	for pageName, page in pairs(pages) do page.Visible = pageName == name end
+	for buttonName, button in pairs(tabButtons) do
+		button.BackgroundColor3 = buttonName == name
+			and Color3.fromRGB(55, 135, 220)
+			or Color3.fromRGB(56, 56, 68)
+	end
 end
 
-minimizeButton.MouseButton1Click:Connect(minimizeToLogo)
-logoButton.MouseButton1Click:Connect(restoreFromLogo)
+local function createButton(parent, text, order)
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, 0, 0, 42)
+	button.BackgroundColor3 = Color3.fromRGB(56, 56, 68)
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.TextSize = 14
+	button.Font = Enum.Font.GothamBold
+	button.LayoutOrder = order
+	button.Parent = parent
+	Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
+	return button
+end
 
-closeButton.MouseButton1Click:Connect(function()
+local function setButtonState(button, label, enabled)
+	button.Text = label .. (enabled and ": ON" or ": OFF")
+	button.BackgroundColor3 = enabled
+		and Color3.fromRGB(40, 165, 90)
+		or Color3.fromRGB(56, 56, 68)
+end
+
+local function createSlider(parent, text, order)
+	local group = Instance.new("Frame")
+	group.Size = UDim2.new(1, 0, 0, 62)
+	group.BackgroundTransparency = 1
+	group.LayoutOrder = order
+	group.Parent = parent
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 0, 24)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextSize = 13
+	label.Font = Enum.Font.Gotham
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = group
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, 0, 0, 8)
+	bar.Position = UDim2.fromOffset(0, 39)
+	bar.BackgroundColor3 = Color3.fromRGB(60, 60, 72)
+	bar.BorderSizePixel = 0
+	bar.Active = true
+	bar.Parent = group
+	Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(0, 1)
+	fill.BackgroundColor3 = Color3.fromRGB(55, 135, 220)
+	fill.BorderSizePixel = 0
+	fill.Parent = bar
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+	local knob = Instance.new("TextButton")
+	knob.Size = UDim2.fromOffset(18, 18)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.fromScale(0, 0.5)
+	knob.Text = ""
+	knob.BackgroundColor3 = Color3.new(1, 1, 1)
+	knob.BorderSizePixel = 0
+	knob.Parent = bar
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+	return label, bar, fill, knob
+end
+
+local function setSliderVisual(value, minValue, maxValue, fill, knob)
+	local percent = math.clamp((value - minValue) / (maxValue - minValue), 0, 1)
+	fill.Size = UDim2.fromScale(percent, 1)
+	knob.Position = UDim2.fromScale(percent, 0.5)
+end
+
+local function bindSlider(bar, knob, setter)
+	local dragging = false
+	local function update(position)
+		local width = bar.AbsoluteSize.X
+		if width > 0 then
+			setter(math.clamp((position.X - bar.AbsolutePosition.X) / width, 0, 1))
+		end
+	end
+	local function begin(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			update(input.Position)
+		end
+	end
+	addConnection(bar.InputBegan:Connect(begin))
+	addConnection(knob.InputBegan:Connect(begin))
+	addConnection(UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			update(input.Position)
+		end
+	end))
+	addConnection(UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+	end))
+end
+
+-- Character page
+local characterTitle = Instance.new("TextLabel")
+characterTitle.Size = UDim2.new(1, 0, 0, 35)
+characterTitle.BackgroundTransparency = 1
+characterTitle.Text = "Character"
+characterTitle.TextColor3 = Color3.new(1, 1, 1)
+characterTitle.TextSize = 20
+characterTitle.Font = Enum.Font.GothamBold
+characterTitle.TextXAlignment = Enum.TextXAlignment.Left
+characterTitle.LayoutOrder = 1
+characterTitle.Parent = characterContent
+
+local walkButton = createButton(characterContent, "Walk Speed: OFF", 2)
+local walkLabel, walkBar, walkFill, walkKnob = createSlider(characterContent, "Walk Speed", 3)
+local jumpButton = createButton(characterContent, "Infinite Jump: OFF", 4)
+local noclipButton = createButton(characterContent, "Noclip: OFF", 5)
+local promptButton = createButton(characterContent, "Instant Prompt: OFF", 6)
+local flyButton = createButton(characterContent, "Fly: OFF", 7)
+local flyLabel, flyBar, flyFill, flyKnob = createSlider(characterContent, "Fly Speed", 8)
+
+local function updateCharacterUI()
+	setButtonState(walkButton, "Walk Speed + Lock", Config.WalkSpeedEnabled)
+	setButtonState(jumpButton, "Infinite Jump", Config.InfiniteJump)
+	setButtonState(noclipButton, "Noclip", Config.NoclipEnabled)
+	setButtonState(promptButton, "Instant Prompt", Config.InstantPrompt)
+	setButtonState(flyButton, "Fly", Config.ManualFlyEnabled)
+	walkLabel.Text = "Walk Speed: " .. Config.WalkSpeed
+	flyLabel.Text = "Fly Speed: " .. Config.ManualFlySpeed
+	setSliderVisual(Config.WalkSpeed, Config.MinWalkSpeed, Config.MaxWalkSpeed, walkFill, walkKnob)
+	setSliderVisual(Config.ManualFlySpeed, Config.MinManualFlySpeed, Config.MaxManualFlySpeed, flyFill, flyKnob)
+end
+
+bindSlider(walkBar, walkKnob, function(percent)
+	Config.WalkSpeed = math.floor(Config.MinWalkSpeed + (Config.MaxWalkSpeed - Config.MinWalkSpeed) * percent + 0.5)
+	applyWalkSpeed()
+	updateCharacterUI()
+end)
+
+bindSlider(flyBar, flyKnob, function(percent)
+	Config.ManualFlySpeed = math.floor(Config.MinManualFlySpeed + (Config.MaxManualFlySpeed - Config.MinManualFlySpeed) * percent + 0.5)
+	updateCharacterUI()
+end)
+
+addConnection(walkButton.MouseButton1Click:Connect(function()
+	setWalkSpeedEnabled(not Config.WalkSpeedEnabled)
+	updateCharacterUI()
+end))
+addConnection(jumpButton.MouseButton1Click:Connect(function()
+	Config.InfiniteJump = not Config.InfiniteJump
+	updateCharacterUI()
+end))
+addConnection(noclipButton.MouseButton1Click:Connect(function()
+	setNoclipEnabled(not Config.NoclipEnabled)
+	updateCharacterUI()
+end))
+addConnection(promptButton.MouseButton1Click:Connect(function()
+	setInstantPromptEnabled(not Config.InstantPrompt)
+	updateCharacterUI()
+end))
+addConnection(flyButton.MouseButton1Click:Connect(function()
+	setManualFlyEnabled(not Config.ManualFlyEnabled)
+	updateCharacterUI()
+end))
+
+-- Find Egg page
+local eggTitle = characterTitle:Clone()
+eggTitle.Text = "Find Egg"
+eggTitle.Parent = findEggContent
+local eggButton = createButton(findEggContent, "Find Egg: OFF", 2)
+local eggModeButton = createButton(findEggContent, "Mode: RUN", 3)
+local eggSpeedLabel, eggSpeedBar, eggSpeedFill, eggSpeedKnob = createSlider(findEggContent, "Move Speed", 4)
+local eggStatus = Instance.new("TextLabel")
+eggStatus.Size = UDim2.new(1, 0, 0, 95)
+eggStatus.BackgroundTransparency = 1
+eggStatus.Text = "พร้อมค้นหา AreaEggSlotsClient\nรอบที่ 1 กลับซ้าย | รอบที่ 2 กลับขวา"
+eggStatus.TextColor3 = Color3.fromRGB(175, 175, 185)
+eggStatus.TextSize = 13
+eggStatus.Font = Enum.Font.Gotham
+eggStatus.TextWrapped = true
+eggStatus.TextXAlignment = Enum.TextXAlignment.Left
+eggStatus.LayoutOrder = 5
+eggStatus.Parent = findEggContent
+
+local function updateEggUI()
+	setButtonState(eggButton, "Find Egg", Config.FindEggEnabled)
+	eggModeButton.Text = "Mode: " .. Config.FindEggMode
+	eggModeButton.BackgroundColor3 = Config.FindEggMode == "FLY"
+		and Color3.fromRGB(130, 80, 210)
+		or Color3.fromRGB(45, 145, 210)
+	eggSpeedLabel.Text = "Move Speed: " .. Config.FindEggSpeed
+	setSliderVisual(Config.FindEggSpeed, Config.MinFindEggSpeed, Config.MaxFindEggSpeed, eggSpeedFill, eggSpeedKnob)
+end
+
+local function updateGlobalStatus(
+	index,
+	total,
+	action,
+	name,
+	egg,
+	destination
+)
+	local size = getHitboxSize(egg)
+	local eggPosition = getObjectPosition(egg)
+	local _, zoneName = getZoneFromPosition(
+		eggPosition
+	)
+	local sizeText = "-"
+	local destinationText = destination or "-"
+	local destinationPosition
+
+	if size then
+		sizeText = string.format("%.2f", size)
+		sizeText = sizeText:gsub("0+$", ""):gsub("%.$", "")
+	end
+
+	if destination == "Volcano/Prehistoric Waypoint" then
+		destinationPosition = VOLCANO_RETURN_WAYPOINT.Position
+	elseif destination == "Abyss/Cosmic Waypoint" then
+		destinationPosition = ABYSS_COSMIC_RETURN_WAYPOINT.Position
+	elseif destination == "Return ซ้าย" then
+		destinationPosition = FLY_RETURN_LEFT.Position
+	elseif destination == "Return ขวา" then
+		destinationPosition = FLY_RETURN_RIGHT.Position
+	elseif eggPosition then
+		destinationPosition = eggPosition
+	end
+
+	if destinationPosition then
+		destinationText = string.format(
+			"%s (%.1f, %.1f, %.1f)",
+			destinationText,
+			destinationPosition.X,
+			destinationPosition.Y,
+			destinationPosition.Z
+		)
+	end
+
+	UI.GlobalStatusLabel.Text = string.format(
+		"Status: %s | Egg: %s | %d/%d\n"
+			.. "Size: %s | Zone: %s | Destination: %s",
+		action or "Ready",
+		name or "-",
+		index or 0,
+		total or 0,
+		sizeText,
+		zoneName or "-",
+		destinationText
+	)
+end
+
+bindSlider(eggSpeedBar, eggSpeedKnob, function(percent)
+	Config.FindEggSpeed = math.floor(Config.MinFindEggSpeed + (Config.MaxFindEggSpeed - Config.MinFindEggSpeed) * percent + 0.5)
+	updateEggUI()
+end)
+
+addConnection(eggModeButton.MouseButton1Click:Connect(function()
+	if Config.FindEggEnabled then
+		stopFindEgg()
+		eggStatus.Text = "หยุด Find Egg เพื่อเปลี่ยนโหมดแล้ว"
+		updateGlobalStatus(0, 0, "Stopped", "-", nil, "Mode Changed")
+	end
+
+	Config.FindEggMode = Config.FindEggMode == "RUN"
+		and "FLY"
+		or "RUN"
+	updateEggUI()
+end))
+
+addConnection(eggButton.MouseButton1Click:Connect(function()
+	if Config.FindEggEnabled then
+		stopFindEgg()
+		eggStatus.Text = "หยุด Find Egg แล้ว"
+		updateGlobalStatus(0, 0, "Stopped", "-", nil, "-")
+		updateEggUI()
+		return
+	end
+	eggStatus.TextColor3 = Color3.fromRGB(175, 175, 185)
+	startFindEgg(
+		function(index, total, action, name, egg, destination)
+			eggStatus.Text = string.format("รอบ %d/%d | %s\nObject: %s", index, total, action, name)
+			updateGlobalStatus(
+				index,
+				total,
+				action,
+				name,
+				egg,
+				destination
+			)
+		end,
+		function(completed, message)
+			eggStatus.Text = message
+			eggStatus.TextColor3 = completed
+				and Color3.fromRGB(90, 220, 130)
+				or Color3.fromRGB(235, 130, 100)
+			updateGlobalStatus(
+				0,
+				0,
+				message,
+				"-",
+				nil,
+				completed and "Completed" or "Stopped"
+			)
+			updateEggUI()
+		end
+	)
+	updateEggUI()
+end))
+
+-- Zones page
+local zonesTitle = characterTitle:Clone()
+zonesTitle.Text = "Select Egg Zones"
+zonesTitle.Parent = zonesContent
+
+local zoneActions = Instance.new("Frame")
+zoneActions.Size = UDim2.new(1, 0, 0, 42)
+zoneActions.BackgroundTransparency = 1
+zoneActions.LayoutOrder = 2
+zoneActions.Parent = zonesContent
+
+local selectAllZonesButton = createButton(
+	zoneActions,
+	"Select All",
+	1
+)
+selectAllZonesButton.Size = UDim2.new(0.5, -5, 1, 0)
+selectAllZonesButton.Position = UDim2.fromOffset(0, 0)
+
+local clearAllZonesButton = createButton(
+	zoneActions,
+	"Clear All",
+	2
+)
+clearAllZonesButton.Size = UDim2.new(0.5, -5, 1, 0)
+clearAllZonesButton.Position = UDim2.new(0.5, 5, 0, 0)
+
+local zonesStatus = Instance.new("TextLabel")
+zonesStatus.Size = UDim2.new(1, 0, 0, 34)
+zonesStatus.BackgroundTransparency = 1
+zonesStatus.TextColor3 = Color3.fromRGB(175, 175, 185)
+zonesStatus.TextSize = 13
+zonesStatus.Font = Enum.Font.Gotham
+zonesStatus.TextXAlignment = Enum.TextXAlignment.Left
+zonesStatus.LayoutOrder = 3
+zonesStatus.Parent = zonesContent
+
+local zonesScroll = Instance.new("ScrollingFrame")
+zonesScroll.Name = "ZoneSelectionScroll"
+zonesScroll.Size = UDim2.new(1, 0, 0, 300)
+zonesScroll.BackgroundColor3 = Color3.fromRGB(34, 34, 42)
+zonesScroll.BorderSizePixel = 0
+zonesScroll.ScrollBarThickness = 6
+zonesScroll.ScrollBarImageColor3 = Color3.fromRGB(110, 110, 125)
+zonesScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+zonesScroll.CanvasSize = UDim2.new()
+zonesScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+zonesScroll.LayoutOrder = 4
+zonesScroll.Parent = zonesContent
+Instance.new("UICorner", zonesScroll).CornerRadius = UDim.new(0, 8)
+
+local zoneListContent = Instance.new("Frame")
+zoneListContent.Size = UDim2.new(1, -12, 0, 0)
+zoneListContent.AutomaticSize = Enum.AutomaticSize.Y
+zoneListContent.BackgroundTransparency = 1
+zoneListContent.Parent = zonesScroll
+
+local zoneListLayout = Instance.new("UIListLayout")
+zoneListLayout.Padding = UDim.new(0, 8)
+zoneListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+zoneListLayout.Parent = zoneListContent
+
+local zoneListPadding = Instance.new("UIPadding")
+zoneListPadding.PaddingTop = UDim.new(0, 8)
+zoneListPadding.PaddingBottom = UDim.new(0, 8)
+zoneListPadding.PaddingLeft = UDim.new(0, 8)
+zoneListPadding.PaddingRight = UDim.new(0, 4)
+zoneListPadding.Parent = zoneListContent
+
+local zoneButtons = {}
+
+local function updateZonesUI()
+	local selectedCount = 0
+	for _, zone in ipairs(ZONES) do
+		local selected = selectedZones[zone.Name] == true
+		if selected then selectedCount += 1 end
+		local button = zoneButtons[zone.Name]
+		if button then
+			setButtonState(button, zone.Name, selected)
+		end
+	end
+	zonesStatus.Text = string.format(
+		"Selected: %d/%d Zones",
+		selectedCount,
+		#ZONES
+	)
+end
+
+local function stopFindEggForZoneChange()
+	if Config.FindEggEnabled then
+		stopFindEgg()
+		eggStatus.Text = "หยุด Find Egg เนื่องจากมีการเปลี่ยน Zone"
+		updateGlobalStatus(0, 0, "Stopped", "-", nil, "Zone Changed")
+		updateEggUI()
+	end
+end
+
+for index, zone in ipairs(ZONES) do
+	local button = createButton(
+		zoneListContent,
+		zone.Name .. ": ON",
+		index
+	)
+	zoneButtons[zone.Name] = button
+
+	addConnection(button.MouseButton1Click:Connect(function()
+		stopFindEggForZoneChange()
+		selectedZones[zone.Name] = not selectedZones[zone.Name]
+		updateZonesUI()
+	end))
+end
+
+addConnection(selectAllZonesButton.MouseButton1Click:Connect(function()
+	stopFindEggForZoneChange()
+	for _, zone in ipairs(ZONES) do
+		selectedZones[zone.Name] = true
+	end
+	updateZonesUI()
+end))
+
+addConnection(clearAllZonesButton.MouseButton1Click:Connect(function()
+	stopFindEggForZoneChange()
+	for _, zone in ipairs(ZONES) do
+		selectedZones[zone.Name] = false
+	end
+	updateZonesUI()
+end))
+
+-- Size page: เลือกตัวกรองได้ครั้งละหนึ่งค่า
+local sizeTitle = characterTitle:Clone()
+sizeTitle.Text = "Hitbox Size Filter"
+sizeTitle.Parent = sizeContent
+
+local sizeStatus = Instance.new("TextLabel")
+sizeStatus.Size = UDim2.new(1, 0, 0, 52)
+sizeStatus.BackgroundTransparency = 1
+sizeStatus.TextColor3 = Color3.fromRGB(175, 175, 185)
+sizeStatus.TextSize = 13
+sizeStatus.Font = Enum.Font.Gotham
+sizeStatus.TextWrapped = true
+sizeStatus.TextXAlignment = Enum.TextXAlignment.Left
+sizeStatus.LayoutOrder = 2
+sizeStatus.Parent = sizeContent
+
+local sizeButtons = {}
+
+local function formatSize(value)
+	if value % 1 == 0 then
+		return tostring(math.floor(value))
+	end
+	return tostring(value)
+end
+
+local function updateSizeUI()
+	for _, value in ipairs(SIZE_FILTERS) do
+		local button = sizeButtons[value]
+		if button then
+			setButtonState(
+				button,
+				"Hitbox Size > " .. formatSize(value),
+				selectedHitboxSize == value
+			)
+		end
+	end
+
+	sizeStatus.Text =
+		"Selected: Hitbox Size > "
+		.. formatSize(selectedHitboxSize)
+		.. "\nเรียงขนาดใหญ่ไปเล็ก และ Zone หลังสุดไปหน้าสุด"
+end
+
+for index, value in ipairs(SIZE_FILTERS) do
+	local button = createButton(
+		sizeContent,
+		"Hitbox Size > " .. formatSize(value),
+		2 + index
+	)
+	sizeButtons[value] = button
+
+	addConnection(button.MouseButton1Click:Connect(function()
+		if Config.FindEggEnabled then
+			stopFindEgg()
+			eggStatus.Text =
+				"หยุด Find Egg เนื่องจากเปลี่ยน Size Filter"
+			updateGlobalStatus(
+				0,
+				0,
+				"Stopped",
+				"-",
+				nil,
+				"Size Filter Changed"
+			)
+			updateEggUI()
+		end
+
+		selectedHitboxSize = value
+		updateSizeUI()
+	end))
+end
+
+addConnection(characterTab.MouseButton1Click:Connect(function()
+	showTab("Character")
+	updateCharacterUI()
+end))
+addConnection(findEggTab.MouseButton1Click:Connect(function()
+	showTab("Find Egg")
+	updateEggUI()
+end))
+addConnection(zonesTab.MouseButton1Click:Connect(function()
+	showTab("Zones")
+	updateZonesUI()
+end))
+addConnection(sizeTab.MouseButton1Click:Connect(function()
+	showTab("Size")
+	updateSizeUI()
+end))
+
+-- Drag / minimize / close
+local draggingWindow = false
+local dragStart
+local startPosition
+addConnection(titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		draggingWindow = true
+		dragStart = input.Position
+		startPosition = UI.Main.Position
+	end
+end))
+addConnection(UserInputService.InputChanged:Connect(function(input)
+	if draggingWindow and (input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		UI.Main.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
+	end
+end))
+addConnection(UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then draggingWindow = false end
+end))
+
+addConnection(minimizeButton.MouseButton1Click:Connect(function()
+	UI.Main.Visible = false
+	UI.LogoButton.Visible = true
+end))
+
+addConnection(UI.LogoButton.MouseButton1Click:Connect(function()
+	UI.LogoButton.Visible = false
+	UI.Main.Visible = true
+end))
+
+local function closeScript()
+	if scriptClosed then return end
 	scriptClosed = true
-	autoFarmEnabled = false
-	stopCollecting("สถานะ: ปิดโปรแกรม")
-	setRenderedHidden(false)
+	stopFindEgg()
+	setManualFlyEnabled(false)
+	setWalkSpeedEnabled(false)
+	Config.InfiniteJump = false
+	setNoclipEnabled(false)
+	setInstantPromptEnabled(false)
+	disconnectAll()
+	UI.ScreenGui:Destroy()
+end
 
-	for egg in pairs(eggHighlights) do
-		removeEggESP(egg)
+addConnection(closeButton.MouseButton1Click:Connect(closeScript))
+addConnection(UserInputService.InputBegan:Connect(function(input, processed)
+	if scriptClosed or processed then return end
+	if input.KeyCode == Config.ToggleKey then
+		local showMain = not UI.Main.Visible
+		UI.Main.Visible = showMain
+		UI.LogoButton.Visible = not showMain
 	end
+end))
 
-	for prompt, data in pairs(promptData) do
-		if data.HoldConnection then
-			data.HoldConnection:Disconnect()
-		end
-		if data.DestroyConnection then
-			data.DestroyConnection:Disconnect()
-		end
-		promptData[prompt] = nil
-	end
+addConnection(player.CharacterAdded:Connect(function()
+	stopFindEgg()
+	stopManualFly()
+	task.wait(0.7)
+	applyWalkSpeed()
+	if Config.NoclipEnabled then setNoclipEnabled(true) end
+	Config.ManualFlyEnabled = false
+	updateCharacterUI()
+	updateEggUI()
+end))
 
-	screenGui:Destroy()
-end)
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then
-		return
-	end
-
-	if input.KeyCode == TOGGLE_KEY and screenGui.Parent then
-		if minimized then
-			restoreFromLogo()
-		else
-			minimizeToLogo()
-		end
-	end
-end)
-
-updateRunningUI()
-updateAutoFarmUI()
+showTab("Character")
+updateCharacterUI()
+updateEggUI()
+updateZonesUI()
+updateSizeUI()
