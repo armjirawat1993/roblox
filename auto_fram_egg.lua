@@ -75,6 +75,7 @@ local Config = {
 	MinManualFlySpeed = 10,
 	MaxManualFlySpeed = 500,
 	InstantPrompt = false,
+	HideAnimalsEnabled = false,
 	FindEggEnabled = false,
 	FindEggMode = "RUN",
 	FindEggSpeed = 250,
@@ -100,6 +101,8 @@ local findEggThread
 local noclipOriginal = {}
 local noclipConnection
 local promptOriginal = {}
+local hiddenAnimalTransparency = {}
+local hideAnimalsConnection
 
 local function addConnection(connection)
 	table.insert(connections, connection)
@@ -242,6 +245,82 @@ addConnection(Workspace.DescendantAdded:Connect(function(object)
 	end
 end))
 
+-- Hide: ซ่อนชิ้นส่วนภาพภายใน Model ระดับแรกของ ClientRenderedAssets
+local function hideAnimalVisual(object)
+	if not object then
+		return 0
+	end
+
+	if not (
+		object:IsA("BasePart")
+		or object:IsA("Decal")
+		or object:IsA("Texture")
+	) then
+		return 0
+	end
+
+	if hiddenAnimalTransparency[object] == nil then
+		hiddenAnimalTransparency[object] = object.Transparency
+		object.Transparency = 1
+		return 1
+	end
+
+	object.Transparency = 1
+	return 0
+end
+
+local function hideAnimalContainer(container)
+	if not container then
+		return 0
+	end
+
+	local hiddenCount = hideAnimalVisual(container)
+	for _, descendant in ipairs(container:GetDescendants()) do
+		hiddenCount += hideAnimalVisual(descendant)
+	end
+
+	return hiddenCount
+end
+
+local function setHideAnimalsEnabled(enabled)
+	Config.HideAnimalsEnabled = enabled
+
+	if hideAnimalsConnection then
+		hideAnimalsConnection:Disconnect()
+		hideAnimalsConnection = nil
+	end
+
+	if not enabled then
+		for object, originalTransparency in pairs(
+			hiddenAnimalTransparency
+		) do
+			if object and object.Parent then
+				object.Transparency = originalTransparency
+			end
+		end
+		table.clear(hiddenAnimalTransparency)
+		return 0
+	end
+
+	local folder = Workspace:FindFirstChild("ClientRenderedAssets")
+	if not folder then
+		return 0
+	end
+
+	local hiddenCount = 0
+	for _, object in ipairs(folder:GetChildren()) do
+		hiddenCount += hideAnimalContainer(object)
+	end
+
+	hideAnimalsConnection = folder.DescendantAdded:Connect(function(object)
+		if Config.HideAnimalsEnabled then
+			hideAnimalVisual(object)
+		end
+	end)
+
+	return hiddenCount
+end
+
 local function pressEOnce()
 	pcall(function()
 		VirtualInputManager:SendKeyEvent(
@@ -383,6 +462,26 @@ local function getHitboxSize(object)
 	)
 end
 
+local function hasEggHighlight(object)
+	if not object then
+		return false
+	end
+
+	if object:FindFirstChildWhichIsA("Highlight", true) then
+		return true
+	end
+
+	-- รองรับกรณี Object ใช้ชื่อ Hilight/Highlight
+	for _, descendant in ipairs(object:GetDescendants()) do
+		local name = string.lower(descendant.Name)
+		if name == "hilight" or name == "highlight" then
+			return true
+		end
+	end
+
+	return false
+end
+
 local function getAllEggs()
 	local folder = Workspace:FindFirstChild("AreaEggSlotsClient")
 	local eggRecords = {}
@@ -394,6 +493,7 @@ local function getAllEggs()
 		if object:IsA("Model") or object:IsA("BasePart") then
 			local position = getObjectPosition(object)
 			local hitboxSize = getHitboxSize(object)
+			local hasHighlight = hasEggHighlight(object)
 
 			if position and hitboxSize then
 
@@ -405,6 +505,7 @@ local function getAllEggs()
 
 						table.insert(eggRecords, {
 							Object = object,
+							HasHighlight = hasHighlight,
 							Size = hitboxSize,
 							ZoneIndex = zoneIndex,
 						})
@@ -416,7 +517,12 @@ local function getAllEggs()
 	end
 
 	table.sort(eggRecords, function(a, b)
-		-- ขนาดใหญ่ไปเล็กเป็นลำดับหลัก
+		-- ไข่ที่มี Highlight ต้องมาก่อนเสมอ
+		if a.HasHighlight ~= b.HasHighlight then
+			return a.HasHighlight
+		end
+
+		-- ภายในแต่ละกลุ่ม เรียงขนาดใหญ่ไปเล็ก
 		if a.Size ~= b.Size then
 			return a.Size > b.Size
 		end
@@ -927,6 +1033,7 @@ local characterTab, characterContent = createTab("Character", 1)
 local findEggTab, findEggContent = createTab("Find Egg", 2)
 local zonesTab, zonesContent = createTab("Zones", 3)
 local sizeTab, sizeContent = createTab("Size", 4)
+local hideTab, hideContent = createTab("Hide", 5)
 
 local function showTab(name)
 	for pageName, page in pairs(pages) do page.Visible = pageName == name end
@@ -1443,6 +1550,57 @@ for index, value in ipairs(SIZE_FILTERS) do
 	end))
 end
 
+-- Hide page
+local hideTitle = characterTitle:Clone()
+hideTitle.Text = "Hide Animals"
+hideTitle.Parent = hideContent
+
+local hideAnimalsButton = createButton(
+	hideContent,
+	"Hide Animals: OFF",
+	2
+)
+
+local hideStatus = Instance.new("TextLabel")
+hideStatus.Size = UDim2.new(1, 0, 0, 90)
+hideStatus.BackgroundTransparency = 1
+hideStatus.Text =
+	"Path: Workspace > ClientRenderedAssets\n"
+	.. "ซ่อนชิ้นส่วนภาพภายใน Model ระดับแรก"
+hideStatus.TextColor3 = Color3.fromRGB(175, 175, 185)
+hideStatus.TextSize = 13
+hideStatus.Font = Enum.Font.Gotham
+hideStatus.TextWrapped = true
+hideStatus.TextXAlignment = Enum.TextXAlignment.Left
+hideStatus.LayoutOrder = 3
+hideStatus.Parent = hideContent
+
+local function updateHideUI()
+	setButtonState(
+		hideAnimalsButton,
+		"Hide Animals",
+		Config.HideAnimalsEnabled
+	)
+end
+
+addConnection(hideAnimalsButton.MouseButton1Click:Connect(function()
+	local enabled = not Config.HideAnimalsEnabled
+	local changed = setHideAnimalsEnabled(enabled)
+
+	if enabled then
+		hideStatus.Text = string.format(
+			"Hide ON | ซ่อน %d ชิ้นส่วน\n"
+				.. "BasePart/Decal/Texture ภายใน Model ระดับแรก",
+			changed
+		)
+	else
+		hideStatus.Text =
+			"Hide OFF | คืนค่า Transparency เดิมแล้ว"
+	end
+
+	updateHideUI()
+end))
+
 addConnection(characterTab.MouseButton1Click:Connect(function()
 	showTab("Character")
 	updateCharacterUI()
@@ -1458,6 +1616,10 @@ end))
 addConnection(sizeTab.MouseButton1Click:Connect(function()
 	showTab("Size")
 	updateSizeUI()
+end))
+addConnection(hideTab.MouseButton1Click:Connect(function()
+	showTab("Hide")
+	updateHideUI()
 end))
 
 -- Drag / minimize / close
@@ -1503,6 +1665,7 @@ local function closeScript()
 	Config.InfiniteJump = false
 	setNoclipEnabled(false)
 	setInstantPromptEnabled(false)
+	setHideAnimalsEnabled(false)
 	disconnectAll()
 	UI.ScreenGui:Destroy()
 end
@@ -1533,3 +1696,4 @@ updateCharacterUI()
 updateEggUI()
 updateZonesUI()
 updateSizeUI()
+updateHideUI()
