@@ -58,7 +58,7 @@ for _, zone in ipairs(ZONES) do
 end
 
 local SIZE_FILTERS = {0, 1, 1.5, 2, 2.5, 3}
-local selectedHitboxSize = 0
+local selectedHitboxSize = 2
 
 local Config = {
 	ToggleKey = Enum.KeyCode.L,
@@ -77,10 +77,10 @@ local Config = {
 	InstantPrompt = false,
 	HideAnimalsEnabled = false,
 	FindEggEnabled = false,
-	FindEggMode = "RUN",
-	FindEggSpeed = 250,
+	FindEggMode = "FLY",
+	FindEggSpeed = 700,
 	MinFindEggSpeed = 250,
-	MaxFindEggSpeed = 500,
+	MaxFindEggSpeed = 700,
 	ArrivalDistance = 3,
 	EggArrivalDistance = 1,
 	CollectWaitTime = 0.35,
@@ -1211,7 +1211,7 @@ local eggTitle = characterTitle:Clone()
 eggTitle.Text = "Find Egg"
 eggTitle.Parent = findEggContent
 local eggButton = createButton(findEggContent, "Find Egg: OFF", 2)
-local eggModeButton = createButton(findEggContent, "Mode: RUN", 3)
+local eggModeButton = createButton(findEggContent, "Mode: FLY", 3)
 local eggSpeedLabel, eggSpeedBar, eggSpeedFill, eggSpeedKnob = createSlider(findEggContent, "Move Speed", 4)
 local eggStatus = Instance.new("TextLabel")
 eggStatus.Size = UDim2.new(1, 0, 0, 95)
