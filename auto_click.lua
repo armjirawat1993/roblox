@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -12,6 +13,7 @@ end
 
 local enabled = false
 local clickDelay = 0.01
+local pressDuration = 0.01
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoClickGui"
@@ -68,23 +70,32 @@ local function autoClick()
         tool:Activate()
     end
 
-    -- จำลองคลิกเมาส์ซ้าย
-    local mousePosition = UserInputService:GetMouseLocation()
+    local camera = Workspace.CurrentCamera
+    if not camera then
+        return
+    end
 
+    -- หาตำแหน่งกึ่งกลางหน้าจอ
+    local viewportSize = camera.ViewportSize
+    local centerX = math.floor(viewportSize.X / 2)
+    local centerY = math.floor(viewportSize.Y / 2)
+
+    -- กดเมาส์ซ้ายตรงกลางหน้าจอ
     VirtualInputManager:SendMouseButtonEvent(
-        mousePosition.X,
-        mousePosition.Y,
+        centerX,
+        centerY,
         0,
         true,
         game,
         0
     )
 
-    task.wait(0.01)
+    task.wait(pressDuration)
 
+    -- ปล่อยเมาส์ซ้ายตรงกลางหน้าจอ
     VirtualInputManager:SendMouseButtonEvent(
-        mousePosition.X,
-        mousePosition.Y,
+        centerX,
+        centerY,
         0,
         false,
         game,
