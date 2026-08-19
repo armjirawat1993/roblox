@@ -537,14 +537,28 @@ findAllButton.Activated:Connect(function()
 	startContinuous(true)
 end)
 
+local minimized = false
+
+local function setMinimized(value)
+	if programClosed then return end
+	minimized = value == true
+
+	-- ต้องเปิด ScreenGui ไว้ ไม่เช่นนั้น Logo จะถูกซ่อนไปด้วย
+	gui.Enabled = true
+	main.Visible = not minimized
+	logo.Visible = minimized
+end
+
+local function toggleMinimized()
+	setMinimized(not minimized)
+end
+
 minimize.Activated:Connect(function()
-	main.Visible = false
-	logo.Visible = true
+	setMinimized(true)
 end)
 
 logo.Activated:Connect(function()
-	logo.Visible = false
-	main.Visible = true
+	setMinimized(false)
 end)
 
 close.Activated:Connect(function()
@@ -567,8 +581,9 @@ close.Activated:Connect(function()
 end)
 
 UIS.InputBegan:Connect(function(input, processed)
-	if not programClosed and not processed and input.KeyCode == TOGGLE_KEY then
-		gui.Enabled = not gui.Enabled
+	if not programClosed and input.KeyCode == TOGGLE_KEY then
+		-- ใช้ Function เดียวกับปุ่ม - ด้านบน
+		toggleMinimized()
 	end
 end)
 
