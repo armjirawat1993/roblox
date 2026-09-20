@@ -1,4 +1,4 @@
-
+-- Find Egg - Group Select + Quantity + TP/Fly/Auto E + Auto Luck Range + Fly Speed + Cancel
 -- Place this LocalScript in StarterPlayer > StarterPlayerScripts.
 
 local Players = game:GetService("Players")
@@ -34,7 +34,14 @@ local stopActiveAutoE = nil
 
 local movementMode = nil -- "TP" or "Fly"
 local autoEEnabled = false
+local autoModeEnabled = false
+local currentRunSource = nil -- "manual" or "auto"
+local autoProcessed = setmetatable({}, {__mode = "k"})
+local autoScanScheduled = false
 
+local MIN_FLY_SPEED = 300
+local MAX_FLY_SPEED = 600
+local FLY_SPEED_STEP = 25
 local SPEED = 350
 
 local COLORS = {
@@ -95,8 +102,8 @@ local gui = make("ScreenGui", {
 local highlightFolder = make("Folder", {Name = "FindEggHighlights"}, workspace)
 
 local panel = make("Frame", {
-    Size = UDim2.fromOffset(370, 570),
-    Position = UDim2.new(0.5, -185, 0.5, -285),
+    Size = UDim2.fromOffset(370, 660),
+    Position = UDim2.new(0.5, -185, 0.5, -330),
     BackgroundColor3 = COLORS.panel,
     BorderSizePixel = 0,
 }, gui)
@@ -229,7 +236,7 @@ local selectAll = button("Select All Groups", UDim2.fromOffset(166, 30), UDim2.f
 local clearAll = button("Clear Groups", UDim2.fromOffset(166, 30), UDim2.fromOffset(192, 90), panel)
 
 local list = make("ScrollingFrame", {
-    Size = UDim2.new(1, -24, 1, -348),
+    Size = UDim2.new(1, -24, 1, -478),
     Position = UDim2.fromOffset(12, 130),
     BackgroundColor3 = COLORS.panel2,
     BorderSizePixel = 0,
@@ -247,7 +254,7 @@ local quantityValue = 1
 
 local quantityFrame = make("Frame", {
     Size = UDim2.new(1, -24, 0, 34),
-    Position = UDim2.new(0, 12, 1, -210),
+    Position = UDim2.new(0, 12, 1, -340),
     BackgroundTransparency = 1,
 }, panel)
 
@@ -292,11 +299,11 @@ local quantityMaxLabel = make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Right,
 }, quantityFrame)
 
-local espButton = button("ESP Border: OFF", UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 1, -170), panel)
+local espButton = button("ESP Border: OFF", UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 1, -300), panel)
 
 local optionFrame = make("Frame", {
     Size = UDim2.new(1, -24, 0, 34),
-    Position = UDim2.new(0, 12, 1, -132),
+    Position = UDim2.new(0, 12, 1, -262),
     BackgroundTransparency = 1,
 }, panel)
 
@@ -310,14 +317,121 @@ local tpCheck = checkbox("TP", 0, 104)
 local flyCheck = checkbox("Fly", 112, 104)
 local autoECheck = checkbox("Auto E", 224, 122)
 
-local startButton = button("START", UDim2.fromOffset(166, 32), UDim2.new(0, 12, 1, -90), panel, COLORS.green)
-local cancelButton = button("CANCEL", UDim2.fromOffset(166, 32), UDim2.new(0, 192, 1, -90), panel, COLORS.red)
+local flySpeedFrame = make("Frame", {
+    Size = UDim2.new(1, -24, 0, 34),
+    Position = UDim2.new(0, 12, 1, -222),
+    BackgroundTransparency = 1,
+}, panel)
+
+local flySpeedLabel = make("TextLabel", {
+    Text = "Fly Speed",
+    Size = UDim2.fromOffset(82, 32),
+    Position = UDim2.fromOffset(0, 1),
+    BackgroundTransparency = 1,
+    TextColor3 = COLORS.muted,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, flySpeedFrame)
+
+local flySpeedMinus = button("−", UDim2.fromOffset(38, 32), UDim2.fromOffset(86, 1), flySpeedFrame, COLORS.row)
+
+local flySpeedBox = make("TextBox", {
+    Text = tostring(SPEED),
+    Size = UDim2.fromOffset(70, 32),
+    Position = UDim2.fromOffset(130, 1),
+    BackgroundColor3 = COLORS.panel2,
+    TextColor3 = COLORS.text,
+    PlaceholderText = "350",
+    ClearTextOnFocus = false,
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    BorderSizePixel = 0,
+}, flySpeedFrame)
+addCorner(flySpeedBox, 7)
+
+local flySpeedPlus = button("+", UDim2.fromOffset(38, 32), UDim2.fromOffset(206, 1), flySpeedFrame, COLORS.row)
+
+local flySpeedRangeLabel = make("TextLabel", {
+    Text = "300 - 600",
+    Size = UDim2.fromOffset(96, 32),
+    Position = UDim2.fromOffset(248, 1),
+    BackgroundTransparency = 1,
+    TextColor3 = COLORS.muted,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Right,
+}, flySpeedFrame)
+
+local autoRangeFrame = make("Frame", {
+    Size = UDim2.new(1, -24, 0, 34),
+    Position = UDim2.new(0, 12, 1, -182),
+    BackgroundTransparency = 1,
+}, panel)
+
+local autoRangeLabel = make("TextLabel", {
+    Text = "Auto Luck",
+    Size = UDim2.fromOffset(72, 32),
+    Position = UDim2.fromOffset(0, 1),
+    BackgroundTransparency = 1,
+    TextColor3 = COLORS.muted,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, autoRangeFrame)
+
+local autoMinBox = make("TextBox", {
+    Text = "500B",
+    Size = UDim2.fromOffset(88, 32),
+    Position = UDim2.fromOffset(76, 1),
+    BackgroundColor3 = COLORS.panel2,
+    TextColor3 = COLORS.text,
+    PlaceholderText = "500B",
+    ClearTextOnFocus = false,
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    BorderSizePixel = 0,
+}, autoRangeFrame)
+addCorner(autoMinBox, 7)
+
+local autoRangeMiddle = make("TextLabel", {
+    Text = "≤ Luck ≤",
+    Size = UDim2.fromOffset(80, 32),
+    Position = UDim2.fromOffset(168, 1),
+    BackgroundTransparency = 1,
+    TextColor3 = COLORS.muted,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Center,
+}, autoRangeFrame)
+
+local autoMaxBox = make("TextBox", {
+    Text = "1T",
+    Size = UDim2.fromOffset(92, 32),
+    Position = UDim2.fromOffset(252, 1),
+    BackgroundColor3 = COLORS.panel2,
+    TextColor3 = COLORS.text,
+    PlaceholderText = "1T",
+    ClearTextOnFocus = false,
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    BorderSizePixel = 0,
+}, autoRangeFrame)
+addCorner(autoMaxBox, 7)
+
+local autoButton = button("AUTO: OFF", UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 1, -142), panel, COLORS.row)
+
+local startButton = button("START", UDim2.fromOffset(166, 32), UDim2.new(0, 12, 1, -104), panel, COLORS.green)
+local cancelButton = button("CANCEL", UDim2.fromOffset(166, 32), UDim2.new(0, 192, 1, -104), panel, COLORS.red)
 cancelButton.AutoButtonColor = false
 
 local status = make("TextLabel", {
-    Text = "Select group(s), Qty default 1, choose TP or Fly, then START",
-    Size = UDim2.new(1, -24, 0, 46),
-    Position = UDim2.new(0, 12, 1, -50),
+    Text = "Manual: select group(s) and START | Auto: set Luck range and press AUTO",
+    Size = UDim2.new(1, -24, 0, 58),
+    Position = UDim2.new(0, 12, 1, -66),
     BackgroundTransparency = 1,
     TextColor3 = COLORS.muted,
     TextSize = 12,
@@ -340,6 +454,16 @@ local function updateModeButtons()
     autoECheck.BackgroundColor3 = autoEEnabled and COLORS.blue or COLORS.row
 end
 
+local function updateAutoButton()
+    if autoModeEnabled then
+        autoButton.Text = "AUTO: ON"
+        autoButton.BackgroundColor3 = COLORS.green
+    else
+        autoButton.Text = "AUTO: OFF"
+        autoButton.BackgroundColor3 = COLORS.row
+    end
+end
+
 local function updateRunButtons()
     if busy then
         startButton.Text = "WORKING..."
@@ -360,7 +484,16 @@ local function updateRunButtons()
     end
 end
 
+local function setFlySpeed(value)
+    local numeric = tonumber(value) or SPEED
+    numeric = math.floor(numeric + 0.5)
+    SPEED = math.clamp(numeric, MIN_FLY_SPEED, MAX_FLY_SPEED)
+    flySpeedBox.Text = tostring(SPEED)
+    return SPEED
+end
+
 updateModeButtons()
+updateAutoButton()
 updateRunButtons()
 
 local function parseRarity(value)
@@ -491,6 +624,35 @@ local function luckToNumber(luckText)
     end
 
     return numberValue * multiplier
+end
+
+local function cleanLuckInput(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$")
+end
+
+local function parseAutoRange()
+    local minText = cleanLuckInput(autoMinBox.Text)
+    local maxText = cleanLuckInput(autoMaxBox.Text)
+    local minValue = luckToNumber(minText)
+    local maxValue = luckToNumber(maxText)
+
+    if minText == "" or minValue == -math.huge then
+        return nil, nil, "Invalid Min Luck"
+    end
+
+    if maxText == "" or maxValue == -math.huge then
+        return nil, nil, "Invalid Max Luck"
+    end
+
+    if minValue > maxValue then
+        return nil, nil, "Min Luck must be <= Max Luck"
+    end
+
+    return minValue, maxValue, nil, minText, maxText
+end
+
+local function objectLuckNumber(object)
+    return luckToNumber(getLuckText(object))
 end
 
 local function sortGroupNamesByLuckDesc(names, groups)
@@ -1145,8 +1307,182 @@ local function buildQueue(quantityLimit)
     return queue
 end
 
+local function buildAutoQueue(minLuck, maxLuck)
+    local queue = {}
+
+    for _, object in ipairs(eggs:GetChildren()) do
+        if object.Parent == eggs and not autoProcessed[object] then
+            local luckNumber = objectLuckNumber(object)
+            if luckNumber >= minLuck and luckNumber <= maxLuck then
+                table.insert(queue, object)
+            end
+        end
+    end
+
+    table.sort(queue, function(a, b)
+        local luckA = objectLuckNumber(a)
+        local luckB = objectLuckNumber(b)
+
+        if luckA ~= luckB then
+            return luckA > luckB
+        end
+
+        return a.Name:lower() < b.Name:lower()
+    end)
+
+    return queue
+end
+
+local scheduleAutoScan
+
+local function runAutoRange()
+    if not alive or not autoModeEnabled or busy then
+        return
+    end
+
+    if movementMode ~= "TP" and movementMode ~= "Fly" then
+        autoModeEnabled = false
+        updateAutoButton()
+        status.Text = "AUTO stopped: choose TP or Fly first"
+        return
+    end
+
+    local minLuck, maxLuck, rangeError, minText, maxText = parseAutoRange()
+    if rangeError then
+        autoModeEnabled = false
+        updateAutoButton()
+        status.Text = "AUTO stopped: " .. rangeError
+        return
+    end
+
+    local queue = buildAutoQueue(minLuck, maxLuck)
+    if #queue == 0 then
+        status.Text = string.format("AUTO ON | waiting for %s <= Luck <= %s", minText, maxText)
+        return
+    end
+
+    local character, _, root = getCharacterParts()
+    if not character or not root then
+        status.Text = "AUTO ON | waiting: character unavailable"
+        task.delay(0.5, function()
+            if alive and autoModeEnabled and scheduleAutoScan then
+                scheduleAutoScan()
+            end
+        end)
+        return
+    end
+
+    busy = true
+    currentRunSource = "auto"
+    cancelled = false
+    runId += 1
+    local thisRunId = runId
+    local startOrigin = root.CFrame
+    updateRunButtons()
+
+    local successCount = 0
+    local lastMessage = ""
+
+    for index, object in ipairs(queue) do
+        if isRunCancelled(thisRunId) or not autoModeEnabled then
+            lastMessage = "Cancelled"
+            break
+        end
+
+        -- Each instance is attempted once while AUTO remains enabled.
+        -- A newly spawned/replaced instance can be processed normally.
+        autoProcessed[object] = true
+
+        local luckText = getLuckText(object)
+        status.Text = string.format(
+            "AUTO %s %d/%d: %s (%s)%s",
+            movementMode,
+            index,
+            #queue,
+            object.Name,
+            luckText,
+            autoEEnabled and " + Auto E" or ""
+        )
+
+        local callOk, success, message = pcall(
+            visitObject,
+            object,
+            movementMode,
+            autoEEnabled,
+            autoEEnabled and startOrigin or nil,
+            thisRunId
+        )
+
+        if not callOk then
+            message = tostring(success)
+            success = false
+        end
+
+        if success then
+            successCount += 1
+        end
+
+        lastMessage = tostring(message or "")
+        if not success and lastMessage ~= "Cancelled" then
+            warn("Find Egg AUTO: " .. lastMessage)
+        end
+
+        if isRunCancelled(thisRunId) or not autoModeEnabled then
+            lastMessage = "Cancelled"
+            break
+        end
+
+        if not waitCancelable(0.12, thisRunId) then
+            lastMessage = "Cancelled"
+            break
+        end
+    end
+
+    if runId == thisRunId then
+        busy = false
+        currentRunSource = nil
+        updateRunButtons()
+
+        if autoModeEnabled and not cancelled then
+            status.Text = string.format(
+                "AUTO ON | completed %d/%d | waiting for %s <= Luck <= %s",
+                successCount,
+                #queue,
+                minText,
+                maxText
+            )
+            task.defer(function()
+                if alive and autoModeEnabled and scheduleAutoScan then
+                    scheduleAutoScan()
+                end
+            end)
+        else
+            status.Text = string.format("AUTO stopped | completed %d/%d | %s", successCount, #queue, lastMessage)
+        end
+    end
+end
+
+scheduleAutoScan = function()
+    if not alive or not autoModeEnabled or autoScanScheduled then
+        return
+    end
+
+    autoScanScheduled = true
+    task.defer(function()
+        autoScanScheduled = false
+        if alive and autoModeEnabled and not busy then
+            runAutoRange()
+        end
+    end)
+end
+
 local function runSelected()
     if busy then
+        return
+    end
+
+    if autoModeEnabled then
+        status.Text = "Turn AUTO OFF before manual START"
         return
     end
 
@@ -1169,6 +1505,7 @@ local function runSelected()
     end
 
     busy = true
+    currentRunSource = "manual"
     cancelled = false
     runId += 1
     local thisRunId = runId
@@ -1232,6 +1569,7 @@ local function runSelected()
 
     if runId == thisRunId then
         busy = false
+        currentRunSource = nil
         updateRunButtons()
 
         if cancelled then
@@ -1243,8 +1581,14 @@ local function runSelected()
 end
 
 local function cancelCurrentRun()
+    local hadAuto = autoModeEnabled
+    if hadAuto then
+        autoModeEnabled = false
+        updateAutoButton()
+    end
+
     if not busy then
-        status.Text = "Nothing is running"
+        status.Text = hadAuto and "AUTO stopped" or "Nothing is running"
         return
     end
 
@@ -1255,7 +1599,7 @@ local function cancelCurrentRun()
         stopActiveAutoE = nil
     end
 
-    status.Text = "Cancelling..."
+    status.Text = hadAuto and "Cancelling... AUTO OFF" or "Cancelling..."
 end
 
 quantityMinus.Activated:Connect(function()
@@ -1290,6 +1634,45 @@ quantityBox:GetPropertyChangedSignal("Text"):Connect(function()
         local cleaned = quantityBox.Text:gsub("[^0-9]", "")
         if cleaned ~= quantityBox.Text then
             quantityBox.Text = cleaned
+        end
+    end
+end)
+
+flySpeedMinus.Activated:Connect(function()
+    if busy then
+        status.Text = "Cancel current run before changing Fly Speed"
+        return
+    end
+
+    setFlySpeed(SPEED - FLY_SPEED_STEP)
+    status.Text = string.format("Fly Speed: %d (range %d-%d)", SPEED, MIN_FLY_SPEED, MAX_FLY_SPEED)
+end)
+
+flySpeedPlus.Activated:Connect(function()
+    if busy then
+        status.Text = "Cancel current run before changing Fly Speed"
+        return
+    end
+
+    setFlySpeed(SPEED + FLY_SPEED_STEP)
+    status.Text = string.format("Fly Speed: %d (range %d-%d)", SPEED, MIN_FLY_SPEED, MAX_FLY_SPEED)
+end)
+
+flySpeedBox.FocusLost:Connect(function()
+    if busy then
+        flySpeedBox.Text = tostring(SPEED)
+        return
+    end
+
+    setFlySpeed(flySpeedBox.Text)
+    status.Text = string.format("Fly Speed: %d (range %d-%d)", SPEED, MIN_FLY_SPEED, MAX_FLY_SPEED)
+end)
+
+flySpeedBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if flySpeedBox:IsFocused() then
+        local cleaned = flySpeedBox.Text:gsub("[^0-9]", "")
+        if cleaned ~= flySpeedBox.Text then
+            flySpeedBox.Text = cleaned
         end
     end
 end)
@@ -1346,6 +1729,7 @@ tpCheck.Activated:Connect(function()
 
     movementMode = movementMode == "TP" and nil or "TP"
     updateModeButtons()
+    if autoModeEnabled then scheduleAutoScan() end
 end)
 
 flyCheck.Activated:Connect(function()
@@ -1356,6 +1740,7 @@ flyCheck.Activated:Connect(function()
 
     movementMode = movementMode == "Fly" and nil or "Fly"
     updateModeButtons()
+    if autoModeEnabled then scheduleAutoScan() end
 end)
 
 autoECheck.Activated:Connect(function()
@@ -1366,6 +1751,65 @@ autoECheck.Activated:Connect(function()
 
     autoEEnabled = not autoEEnabled
     updateModeButtons()
+    if autoModeEnabled then scheduleAutoScan() end
+end)
+
+local function normalizeAutoRangeBoxes()
+    autoMinBox.Text = cleanLuckInput(autoMinBox.Text):upper()
+    autoMaxBox.Text = cleanLuckInput(autoMaxBox.Text):upper()
+
+    local _, _, rangeError = parseAutoRange()
+    if rangeError then
+        status.Text = rangeError
+        return false
+    end
+
+    if autoModeEnabled then
+        scheduleAutoScan()
+    end
+    return true
+end
+
+autoMinBox.FocusLost:Connect(normalizeAutoRangeBoxes)
+autoMaxBox.FocusLost:Connect(normalizeAutoRangeBoxes)
+
+autoButton.Activated:Connect(function()
+    if autoModeEnabled then
+        autoModeEnabled = false
+        updateAutoButton()
+
+        if busy and currentRunSource == "auto" then
+            cancelled = true
+            if stopActiveAutoE then
+                pcall(stopActiveAutoE)
+                stopActiveAutoE = nil
+            end
+            status.Text = "Stopping AUTO..."
+        else
+            status.Text = "AUTO OFF"
+        end
+        return
+    end
+
+    if busy then
+        status.Text = "Cancel current run before enabling AUTO"
+        return
+    end
+
+    if movementMode ~= "TP" and movementMode ~= "Fly" then
+        status.Text = "Choose TP or Fly before AUTO"
+        return
+    end
+
+    if not normalizeAutoRangeBoxes() then
+        return
+    end
+
+    table.clear(autoProcessed)
+    cancelled = false
+    autoModeEnabled = true
+    updateAutoButton()
+    scheduleAutoScan()
 end)
 
 startButton.Activated:Connect(runSelected)
@@ -1390,6 +1834,9 @@ local function scheduleRefresh()
         refreshScheduled = false
         if alive then
             refreshGroups(false)
+            if autoModeEnabled and scheduleAutoScan then
+                scheduleAutoScan()
+            end
         end
     end)
 end
@@ -1468,6 +1915,7 @@ end)
 
 gui.Destroying:Connect(function()
     alive = false
+    autoModeEnabled = false
     cancelled = true
     runId += 1
 
