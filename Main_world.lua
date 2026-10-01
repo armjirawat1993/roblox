@@ -7,6 +7,9 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ProximityPromptService = game:GetService("ProximityPromptService")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("CoreGui")
+local GuiService = game:GetService("GuiService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -62,6 +65,19 @@ local Config = {
 	AutoEInterval = 0.01,
 	AutoEHoldTime = 0.01,
 
+	-- Effect
+	DayModeEnabled = false,
+	RemoveFogEnabled = false,
+	RemoveBlurEnabled = false,
+	RemoveAtmosphereEnabled = false,
+	RemoveDecalsEnabled = false,
+	RemoveShadowsEnabled = false,
+	RemoveReflectionsEnabled = false,
+	EffectRefreshInterval = 5,
+	DayClockTime = 14,
+
+	-- ESP
+	PlayerESPEnabled = false,
 
 }
 
@@ -94,6 +110,20 @@ local lastAutoClickTime = 0
 local autoEThread = nil
 local visibleEPrompts = {}
 
+local effectThread = nil
+local originalDayClockTime = nil
+local originalFogSettings = nil
+local originalBlurStates = {}
+local originalAtmosphereParents = {}
+local originalDecalTransparency = {}
+local originalGlobalShadows = nil
+local originalCastShadowStates = {}
+local originalEnvironmentSpecularScale = nil
+local originalReflectanceValues = {}
+
+local playerESPHighlights = {}
+local playerESPCharacterConnections = {}
+local PLAYER_ESP_NAME = "MainWorldPlayerESP"
 
 local Noclip = {
 	Connection = nil,
@@ -793,14 +823,577 @@ do
 end
 
 --==================================================
--- [11] REMOVE OLD GUI
+-- [10.5] EFFECTS
 --==================================================
 
-local oldGui = playerGui:FindFirstChild("ExampleTabMenu")
-
-if oldGui then
-	oldGui:Destroy()
+local function anyEffectEnabled()
+	return Config.DayModeEnabled
+		or Config.RemoveFogEnabled
+		or Config.RemoveBlurEnabled
+		or Config.RemoveAtmosphereEnabled
+		or Config.RemoveDecalsEnabled
+		or Config.RemoveShadowsEnabled
+		or Config.RemoveReflectionsEnabled
 end
+
+local function applyDayMode()
+	if not Config.DayModeEnabled then
+		return
+	end
+
+	Lighting.ClockTime = Config.DayClockTime
+end
+
+local function applyRemoveFog()
+	if not Config.RemoveFogEnabled then
+		return
+	end
+
+	Lighting.FogStart = 0
+	Lighting.FogEnd = 1000000000
+end
+
+local function restoreFog()
+	if originalFogSettings then
+		Lighting.FogStart = originalFogSettings.FogStart
+		Lighting.FogEnd = originalFogSettings.FogEnd
+		originalFogSettings = nil
+	end
+end
+
+local function applyRemoveBlur()
+	if not Config.RemoveBlurEnabled then
+		return
+	end
+
+	local function disableBlurIn(container)
+		if not container then
+			return
+		end
+
+		for _, object in ipairs(container:GetDescendants()) do
+			if object:IsA("BlurEffect") then
+				if originalBlurStates[object] == nil then
+					originalBlurStates[object] = object.Enabled
+				end
+
+				object.Enabled = false
+			end
+		end
+	end
+
+	disableBlurIn(Lighting)
+	disableBlurIn(Workspace.CurrentCamera)
+end
+
+local function restoreBlur()
+	for blur, enabled in pairs(originalBlurStates) do
+		if blur and blur.Parent then
+			pcall(function()
+				blur.Enabled = enabled
+			end)
+		end
+	end
+
+	table.clear(originalBlurStates)
+end
+
+local function applyRemoveAtmosphere()
+	if not Config.RemoveAtmosphereEnabled then
+		return
+	end
+
+	for _, object in ipairs(Lighting:GetDescendants()) do
+		if object:IsA("Atmosphere") then
+			if originalAtmosphereParents[object] == nil then
+				originalAtmosphereParents[object] = object.Parent
+			end
+
+			object.Parent = nil
+		end
+	end
+end
+
+local function restoreAtmosphere()
+	for atmosphere, parent in pairs(originalAtmosphereParents) do
+		if atmosphere then
+			pcall(function()
+				if parent and parent.Parent then
+					atmosphere.Parent = parent
+				else
+					atmosphere.Parent = Lighting
+				end
+			end)
+		end
+	end
+
+	table.clear(originalAtmosphereParents)
+end
+
+local function applyRemoveDecals()
+	if not Config.RemoveDecalsEnabled then
+		return
+	end
+
+	for _, object in ipairs(Workspace:GetDescendants()) do
+		if object:IsA("Decal") then
+			if originalDecalTransparency[object] == nil then
+				originalDecalTransparency[object] = object.Transparency
+			end
+
+			object.Transparency = 1
+		end
+	end
+end
+
+local function restoreDecals()
+	for decal, transparency in pairs(originalDecalTransparency) do
+		if decal and decal.Parent then
+			pcall(function()
+				decal.Transparency = transparency
+			end)
+		end
+	end
+
+	table.clear(originalDecalTransparency)
+end
+
+local function applyRemoveShadows()
+	if not Config.RemoveShadowsEnabled then
+		return
+	end
+
+	if originalGlobalShadows == nil then
+		originalGlobalShadows = Lighting.GlobalShadows
+	end
+
+	Lighting.GlobalShadows = false
+
+	for _, object in ipairs(Workspace:GetDescendants()) do
+		if object:IsA("BasePart") then
+			if originalCastShadowStates[object] == nil then
+				originalCastShadowStates[object] = object.CastShadow
+			end
+
+			object.CastShadow = false
+		end
+	end
+end
+
+local function restoreShadows()
+	if originalGlobalShadows ~= nil then
+		Lighting.GlobalShadows = originalGlobalShadows
+		originalGlobalShadows = nil
+	end
+
+	for part, castShadow in pairs(originalCastShadowStates) do
+		if part and part.Parent then
+			pcall(function()
+				part.CastShadow = castShadow
+			end)
+		end
+	end
+
+	table.clear(originalCastShadowStates)
+end
+
+local function applyRemoveReflections()
+	if not Config.RemoveReflectionsEnabled then
+		return
+	end
+
+	if originalEnvironmentSpecularScale == nil then
+		originalEnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
+	end
+
+	Lighting.EnvironmentSpecularScale = 0
+
+	for _, object in ipairs(Workspace:GetDescendants()) do
+		if object:IsA("BasePart") then
+			if originalReflectanceValues[object] == nil then
+				originalReflectanceValues[object] = object.Reflectance
+			end
+
+			object.Reflectance = 0
+		end
+	end
+end
+
+local function restoreReflections()
+	if originalEnvironmentSpecularScale ~= nil then
+		Lighting.EnvironmentSpecularScale = originalEnvironmentSpecularScale
+		originalEnvironmentSpecularScale = nil
+	end
+
+	for part, reflectance in pairs(originalReflectanceValues) do
+		if part and part.Parent then
+			pcall(function()
+				part.Reflectance = reflectance
+			end)
+		end
+	end
+
+	table.clear(originalReflectanceValues)
+end
+
+local function applyEnabledEffects()
+	applyDayMode()
+	applyRemoveFog()
+	applyRemoveBlur()
+	applyRemoveAtmosphere()
+	applyRemoveDecals()
+	applyRemoveShadows()
+	applyRemoveReflections()
+end
+
+local function stopEffectLoop()
+	if effectThread then
+		task.cancel(effectThread)
+		effectThread = nil
+	end
+end
+
+local function refreshEffectLoop()
+	stopEffectLoop()
+
+	if scriptClosed or not anyEffectEnabled() then
+		return
+	end
+
+	effectThread = task.spawn(function()
+		while not scriptClosed and anyEffectEnabled() do
+			applyEnabledEffects()
+			task.wait(Config.EffectRefreshInterval)
+		end
+
+		effectThread = nil
+	end)
+end
+
+local function setDayModeEnabled(enabled)
+	if enabled and not Config.DayModeEnabled then
+		originalDayClockTime = Lighting.ClockTime
+	end
+
+	Config.DayModeEnabled = enabled
+
+	if enabled then
+		applyDayMode()
+	elseif originalDayClockTime ~= nil then
+		Lighting.ClockTime = originalDayClockTime
+		originalDayClockTime = nil
+	end
+
+	refreshEffectLoop()
+end
+
+local function setRemoveFogEnabled(enabled)
+	if enabled and not Config.RemoveFogEnabled then
+		originalFogSettings = {
+			FogStart = Lighting.FogStart,
+			FogEnd = Lighting.FogEnd,
+		}
+	end
+
+	Config.RemoveFogEnabled = enabled
+
+	if enabled then
+		applyRemoveFog()
+	else
+		restoreFog()
+	end
+
+	refreshEffectLoop()
+end
+
+local function setRemoveBlurEnabled(enabled)
+	Config.RemoveBlurEnabled = enabled
+
+	if enabled then
+		applyRemoveBlur()
+	else
+		restoreBlur()
+	end
+
+	refreshEffectLoop()
+end
+
+local function setRemoveAtmosphereEnabled(enabled)
+	Config.RemoveAtmosphereEnabled = enabled
+
+	if enabled then
+		applyRemoveAtmosphere()
+	else
+		restoreAtmosphere()
+	end
+
+	refreshEffectLoop()
+end
+
+local function setRemoveDecalsEnabled(enabled)
+	Config.RemoveDecalsEnabled = enabled
+
+	if enabled then
+		applyRemoveDecals()
+	else
+		restoreDecals()
+	end
+
+	refreshEffectLoop()
+end
+
+local function setRemoveShadowsEnabled(enabled)
+	Config.RemoveShadowsEnabled = enabled
+
+	if enabled then
+		applyRemoveShadows()
+	else
+		restoreShadows()
+	end
+
+	refreshEffectLoop()
+end
+
+local function setRemoveReflectionsEnabled(enabled)
+	Config.RemoveReflectionsEnabled = enabled
+
+	if enabled then
+		applyRemoveReflections()
+	else
+		restoreReflections()
+	end
+
+	refreshEffectLoop()
+end
+
+local function stopAllEffects(restoreValues)
+	stopEffectLoop()
+
+	Config.DayModeEnabled = false
+	Config.RemoveFogEnabled = false
+	Config.RemoveBlurEnabled = false
+	Config.RemoveAtmosphereEnabled = false
+	Config.RemoveDecalsEnabled = false
+	Config.RemoveShadowsEnabled = false
+	Config.RemoveReflectionsEnabled = false
+
+	if restoreValues then
+		if originalDayClockTime ~= nil then
+			Lighting.ClockTime = originalDayClockTime
+		end
+
+		restoreFog()
+		restoreBlur()
+		restoreAtmosphere()
+		restoreDecals()
+		restoreShadows()
+		restoreReflections()
+	end
+
+	originalDayClockTime = nil
+end
+
+--==================================================
+-- [10.5] PLAYER ESP / HIGHLIGHT
+--==================================================
+
+local function removePlayerHighlight(targetPlayer)
+	local highlight = playerESPHighlights[targetPlayer]
+
+	if highlight then
+		if highlight.Parent then
+			highlight:Destroy()
+		end
+
+		playerESPHighlights[targetPlayer] = nil
+	end
+
+	local character = targetPlayer and targetPlayer.Character
+	if character then
+		local existing = character:FindFirstChild(PLAYER_ESP_NAME)
+		if existing and existing:IsA("Highlight") then
+			existing:Destroy()
+		end
+	end
+end
+
+local function applyPlayerHighlight(targetPlayer)
+	if scriptClosed
+		or not Config.PlayerESPEnabled
+		or not targetPlayer
+		or targetPlayer == player then
+
+		return
+	end
+
+	local character = targetPlayer.Character
+	if not character or not character.Parent then
+		return
+	end
+
+	local oldHighlight = playerESPHighlights[targetPlayer]
+	if oldHighlight and oldHighlight.Parent ~= character then
+		oldHighlight:Destroy()
+		playerESPHighlights[targetPlayer] = nil
+	end
+
+	local highlight = character:FindFirstChild(PLAYER_ESP_NAME)
+
+	if not highlight then
+		highlight = Instance.new("Highlight")
+		highlight.Name = PLAYER_ESP_NAME
+		highlight.Parent = character
+	end
+
+	highlight.Adornee = character
+	highlight.Enabled = true
+	highlight.FillColor = Color3.fromRGB(55, 135, 220)
+	highlight.FillTransparency = 0.75
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+
+	playerESPHighlights[targetPlayer] = highlight
+end
+
+local function refreshPlayerESP()
+	if not Config.PlayerESPEnabled then
+		return
+	end
+
+	for _, targetPlayer in ipairs(Players:GetPlayers()) do
+		if targetPlayer ~= player then
+			applyPlayerHighlight(targetPlayer)
+		end
+	end
+end
+
+local function clearPlayerESP()
+	for targetPlayer in pairs(playerESPHighlights) do
+		removePlayerHighlight(targetPlayer)
+	end
+	table.clear(playerESPHighlights)
+end
+
+local function setupPlayerESPCharacterWatcher(targetPlayer)
+	if not targetPlayer or targetPlayer == player then
+		return
+	end
+
+	local oldConnection = playerESPCharacterConnections[targetPlayer]
+	if oldConnection then
+		oldConnection:Disconnect()
+		playerESPCharacterConnections[targetPlayer] = nil
+	end
+
+	playerESPCharacterConnections[targetPlayer] =
+		targetPlayer.CharacterAdded:Connect(function(character)
+			if scriptClosed then
+				return
+			end
+
+			removePlayerHighlight(targetPlayer)
+
+			if Config.PlayerESPEnabled then
+				task.defer(function()
+					if not scriptClosed
+						and Config.PlayerESPEnabled
+						and targetPlayer.Character == character then
+
+						applyPlayerHighlight(targetPlayer)
+					end
+				end)
+			end
+		end)
+end
+
+local function setPlayerESPEnabled(enabled)
+	Config.PlayerESPEnabled = enabled == true
+
+	if Config.PlayerESPEnabled then
+		refreshPlayerESP()
+	else
+		clearPlayerESP()
+	end
+end
+
+for _, targetPlayer in ipairs(Players:GetPlayers()) do
+	setupPlayerESPCharacterWatcher(targetPlayer)
+end
+
+addConnection(Players.PlayerAdded:Connect(function(targetPlayer)
+	setupPlayerESPCharacterWatcher(targetPlayer)
+
+	if Config.PlayerESPEnabled then
+		task.defer(function()
+			applyPlayerHighlight(targetPlayer)
+		end)
+	end
+end))
+
+addConnection(Players.PlayerRemoving:Connect(function(targetPlayer)
+	removePlayerHighlight(targetPlayer)
+
+	local connection = playerESPCharacterConnections[targetPlayer]
+	if connection then
+		connection:Disconnect()
+		playerESPCharacterConnections[targetPlayer] = nil
+	end
+end))
+
+--==================================================
+-- [11] GUI PARENT / REMOVE OLD GUI
+--==================================================
+
+-- พยายามวาง GUI ในชั้นที่อยู่เหนือ Roblox Settings/CoreGui
+-- ลำดับ: gethui() -> CoreGui -> PlayerGui
+local function resolveGuiParent()
+	-- Executor หลายตัวมี gethui() สำหรับ UI ที่อยู่เหนือ PlayerGui/CoreGui ปกติ
+	local okGetHui, hiddenUi = pcall(function()
+		if typeof(gethui) == "function" then
+			return gethui()
+		end
+		return nil
+	end)
+
+	if okGetHui and hiddenUi then
+		return hiddenUi, "gethui"
+	end
+
+	-- ถ้า environment อนุญาตให้ Parent เข้า CoreGui ให้ใช้ CoreGui
+	local canUseCoreGui = pcall(function()
+		local probe = Instance.new("Folder")
+		probe.Name = "MainWorldCoreGuiProbe"
+		probe.Parent = CoreGui
+		probe:Destroy()
+	end)
+
+	if canUseCoreGui then
+		return CoreGui, "CoreGui"
+	end
+
+	return playerGui, "PlayerGui"
+end
+
+local guiParent, guiParentMode = resolveGuiParent()
+
+-- ลบ GUI เก่าทุกตำแหน่งที่อาจเคยใช้
+local checkedParents = {}
+local function removeOldGuiFrom(parent)
+	if not parent or checkedParents[parent] then
+		return
+	end
+
+	checkedParents[parent] = true
+	local oldGui = parent:FindFirstChild("ExampleTabMenu")
+	if oldGui then
+		oldGui:Destroy()
+	end
+end
+
+removeOldGuiFrom(playerGui)
+removeOldGuiFrom(CoreGui)
+removeOldGuiFrom(guiParent)
 
 
 --==================================================
@@ -813,7 +1406,26 @@ UI.screenGui.ResetOnSpawn = false
 UI.screenGui.IgnoreGuiInset = true
 UI.screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 UI.screenGui.DisplayOrder = 2147483647
-UI.screenGui.Parent = playerGui
+
+-- บาง executor ต้อง protect GUI ก่อน Parent เข้า CoreGui/gethui
+pcall(function()
+	if type(syn) == "table" and typeof(syn.protect_gui) == "function" then
+		syn.protect_gui(UI.screenGui)
+	elseif typeof(protectgui) == "function" then
+		protectgui(UI.screenGui)
+	elseif typeof(protect_gui) == "function" then
+		protect_gui(UI.screenGui)
+	end
+end)
+
+UI.screenGui.Parent = guiParent
+
+-- ให้ GUI อยู่เหนือเอฟเฟกต์ Blur/Core Blur เมื่อ property นี้รองรับ
+pcall(function()
+	UI.screenGui.OnTopOfCoreBlur = true
+end)
+
+UI.screenGui:SetAttribute("GuiParentMode", guiParentMode)
 
 UI.mainFrame = Instance.new("Frame")
 UI.mainFrame.Name = "MainFrame"
@@ -1017,6 +1629,12 @@ local positionTab, positionContent =
 
 local autoClickTab, autoClickContent =
 	createTab("Auto Click", 4)
+
+local effectTab, effectContent =
+	createTab("Effect", 5)
+
+local espTab, espContent =
+	createTab("ESP", 6)
 
 
 local function showTab(tabName)
@@ -2235,6 +2853,214 @@ do
 end
 
 --==================================================
+-- [24.7] EFFECT TAB GUI
+--==================================================
+
+UI.effectTitle = Instance.new("TextLabel")
+UI.effectTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.effectTitle.BackgroundTransparency = 1
+UI.effectTitle.Text = "Effect"
+UI.effectTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.effectTitle.TextSize = 20
+UI.effectTitle.Font = Enum.Font.GothamBold
+UI.effectTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.effectTitle.LayoutOrder = 1
+UI.effectTitle.Parent = effectContent
+
+UI.dayModeButton = createPageButton(
+	effectContent,
+	"Day Mode: OFF",
+	2
+)
+
+UI.removeFogButton = createPageButton(
+	effectContent,
+	"Remove Fog: OFF",
+	3
+)
+
+UI.removeBlurButton = createPageButton(
+	effectContent,
+	"Remove Blur: OFF",
+	4
+)
+
+UI.removeAtmosphereButton = createPageButton(
+	effectContent,
+	"Remove Atmosphere: OFF",
+	5
+)
+
+UI.removeDecalsButton = createPageButton(
+	effectContent,
+	"Remove Decals: OFF",
+	6
+)
+
+UI.removeShadowsButton = createPageButton(
+	effectContent,
+	"Remove Shadows: OFF",
+	7
+)
+
+UI.removeReflectionsButton = createPageButton(
+	effectContent,
+	"Remove Reflections: OFF",
+	8
+)
+
+UI.effectInfoLabel = Instance.new("TextLabel")
+UI.effectInfoLabel.Size = UDim2.new(1, 0, 0, 82)
+UI.effectInfoLabel.BackgroundTransparency = 1
+UI.effectInfoLabel.Text =
+	"Effect ที่เปิดไว้จะถูกบังคับซ้ำทุก "
+	.. tostring(Config.EffectRefreshInterval)
+	.. " วินาที\n"
+	.. "Day Mode = เวลา 14:00 | ปิดแล้วคืนค่าเดิม"
+UI.effectInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
+UI.effectInfoLabel.TextSize = 13
+UI.effectInfoLabel.Font = Enum.Font.Gotham
+UI.effectInfoLabel.TextWrapped = true
+UI.effectInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.effectInfoLabel.LayoutOrder = 9
+UI.effectInfoLabel.Parent = effectContent
+
+local function updateEffectInterface()
+	if scriptClosed then
+		return
+	end
+
+	setButtonState(
+		UI.dayModeButton,
+		"Day Mode",
+		Config.DayModeEnabled
+	)
+
+	setButtonState(
+		UI.removeFogButton,
+		"Remove Fog",
+		Config.RemoveFogEnabled
+	)
+
+	setButtonState(
+		UI.removeBlurButton,
+		"Remove Blur",
+		Config.RemoveBlurEnabled
+	)
+
+	setButtonState(
+		UI.removeAtmosphereButton,
+		"Remove Atmosphere",
+		Config.RemoveAtmosphereEnabled
+	)
+
+	setButtonState(
+		UI.removeDecalsButton,
+		"Remove Decals",
+		Config.RemoveDecalsEnabled
+	)
+
+	setButtonState(
+		UI.removeShadowsButton,
+		"Remove Shadows",
+		Config.RemoveShadowsEnabled
+	)
+
+	setButtonState(
+		UI.removeReflectionsButton,
+		"Remove Reflections",
+		Config.RemoveReflectionsEnabled
+	)
+end
+
+addConnection(UI.dayModeButton.MouseButton1Click:Connect(function()
+	setDayModeEnabled(not Config.DayModeEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeFogButton.MouseButton1Click:Connect(function()
+	setRemoveFogEnabled(not Config.RemoveFogEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeBlurButton.MouseButton1Click:Connect(function()
+	setRemoveBlurEnabled(not Config.RemoveBlurEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeAtmosphereButton.MouseButton1Click:Connect(function()
+	setRemoveAtmosphereEnabled(not Config.RemoveAtmosphereEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeDecalsButton.MouseButton1Click:Connect(function()
+	setRemoveDecalsEnabled(not Config.RemoveDecalsEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeShadowsButton.MouseButton1Click:Connect(function()
+	setRemoveShadowsEnabled(not Config.RemoveShadowsEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeReflectionsButton.MouseButton1Click:Connect(function()
+	setRemoveReflectionsEnabled(not Config.RemoveReflectionsEnabled)
+	updateEffectInterface()
+end))
+
+--==================================================
+-- [24.8] ESP TAB GUI
+--==================================================
+
+UI.espTitle = Instance.new("TextLabel")
+UI.espTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.espTitle.BackgroundTransparency = 1
+UI.espTitle.Text = "ESP"
+UI.espTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.espTitle.TextSize = 20
+UI.espTitle.Font = Enum.Font.GothamBold
+UI.espTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.espTitle.LayoutOrder = 1
+UI.espTitle.Parent = espContent
+
+UI.playerESPButton = createPageButton(
+	espContent,
+	"Player ESP: OFF",
+	2
+)
+
+UI.playerESPInfoLabel = Instance.new("TextLabel")
+UI.playerESPInfoLabel.Size = UDim2.new(1, 0, 0, 70)
+UI.playerESPInfoLabel.BackgroundTransparency = 1
+UI.playerESPInfoLabel.Text =
+	"Highlight ผู้เล่นทุกคน ยกเว้นตัวเรา\n"
+	.. "AlwaysOnTop = มองเห็น Highlight ผ่านสิ่งกีดขวาง"
+UI.playerESPInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
+UI.playerESPInfoLabel.TextSize = 13
+UI.playerESPInfoLabel.Font = Enum.Font.Gotham
+UI.playerESPInfoLabel.TextWrapped = true
+UI.playerESPInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.playerESPInfoLabel.LayoutOrder = 3
+UI.playerESPInfoLabel.Parent = espContent
+
+local function updateESPInterface()
+	if scriptClosed then
+		return
+	end
+
+	setButtonState(
+		UI.playerESPButton,
+		"Player ESP",
+		Config.PlayerESPEnabled
+	)
+end
+
+addConnection(UI.playerESPButton.MouseButton1Click:Connect(function()
+	setPlayerESPEnabled(not Config.PlayerESPEnabled)
+	updateESPInterface()
+end))
+
+--==================================================
 -- [25] TAB EVENTS
 --==================================================
 
@@ -2259,6 +3085,16 @@ addConnection(autoClickTab.MouseButton1Click:Connect(function()
 	Addons.updateAutoEInterface()
 end))
 
+addConnection(effectTab.MouseButton1Click:Connect(function()
+	showTab("Effect")
+	updateEffectInterface()
+end))
+
+addConnection(espTab.MouseButton1Click:Connect(function()
+	showTab("ESP")
+	refreshPlayerESP()
+	updateESPInterface()
+end))
 
 
 --==================================================
@@ -2295,6 +3131,119 @@ UI.logoPadding.PaddingLeft = UDim.new(0, 7)
 UI.logoPadding.PaddingRight = UDim.new(0, 7)
 UI.logoPadding.Parent = UI.logoButton
 
+--==================================================
+-- [26.1] FORCE GUI / LOGO TO FRONT
+--==================================================
+
+local FRONT_DISPLAY_ORDER = 2147483647
+local FRONT_Z_BASE = 100000
+local FRONT_LOGO_Z = 1000000
+local FRONT_Z_ATTRIBUTE = "MainWorldOriginalZIndex"
+
+local function setObjectFrontZ(object)
+	if not object or not object:IsA("GuiObject") then
+		return
+	end
+
+	-- Logo ตอนพับให้อยู่สูงกว่าทุก Object ในหน้าต่างเสมอ
+	if object == UI.logoButton then
+		object.ZIndex = FRONT_LOGO_Z
+		return
+	end
+
+	local originalZ = object:GetAttribute(FRONT_Z_ATTRIBUTE)
+
+	if originalZ == nil then
+		originalZ = object.ZIndex
+		object:SetAttribute(FRONT_Z_ATTRIBUTE, originalZ)
+	end
+
+	object.ZIndex = FRONT_Z_BASE + math.clamp(originalZ, 0, 50000)
+end
+
+local function enforceFrontOrder()
+	if scriptClosed or not UI.screenGui then
+		return
+	end
+
+	-- ถ้าเกมย้าย/ถอด GUI ให้พยายามนำกลับไป parent ชั้นสูงสุดที่เลือกไว้
+	if UI.screenGui.Parent ~= guiParent then
+		pcall(function()
+			UI.screenGui.Parent = guiParent
+		end)
+	end
+
+	if not UI.screenGui.Parent then
+		return
+	end
+
+	UI.screenGui.Enabled = true
+
+	-- ScreenGui ชั้นสูงสุดของ parent ที่ใช้งานอยู่
+	if UI.screenGui.DisplayOrder ~= FRONT_DISPLAY_ORDER then
+		UI.screenGui.DisplayOrder = FRONT_DISPLAY_ORDER
+	end
+
+	pcall(function()
+		UI.screenGui.OnTopOfCoreBlur = true
+	end)
+
+	-- MainFrame และลูกทั้งหมดให้อยู่ชั้นสูง
+	setObjectFrontZ(UI.mainFrame)
+
+	for _, object in ipairs(UI.mainFrame:GetDescendants()) do
+		setObjectFrontZ(object)
+	end
+
+	-- Logo ตอน minimize ใช้ชั้นสูงสุดแยกต่างหาก
+	setObjectFrontZ(UI.logoButton)
+end
+
+-- GUI ที่ถูกสร้างทีหลัง เช่น row/list ต่าง ๆ จะถูกยกขึ้นชั้นหน้าอัตโนมัติ
+addConnection(UI.mainFrame.DescendantAdded:Connect(function(object)
+	task.defer(function()
+		if not scriptClosed and object and object.Parent then
+			setObjectFrontZ(object)
+		end
+	end)
+end))
+
+-- ถ้าเกมพยายามเปลี่ยน DisplayOrder ให้ดันกลับขึ้นหน้าสุด
+addConnection(UI.screenGui:GetPropertyChangedSignal("DisplayOrder"):Connect(function()
+	if scriptClosed then
+		return
+	end
+
+	if UI.screenGui.DisplayOrder ~= FRONT_DISPLAY_ORDER then
+		UI.screenGui.DisplayOrder = FRONT_DISPLAY_ORDER
+	end
+end))
+
+-- เมื่อเปิด Roblox Settings / ESC Menu ให้ย้ำลำดับการแสดงผลทันที
+pcall(function()
+	addConnection(GuiService.MenuOpened:Connect(function()
+		task.defer(enforceFrontOrder)
+		task.delay(0.05, enforceFrontOrder)
+		task.delay(0.25, enforceFrontOrder)
+	end))
+end)
+
+pcall(function()
+	addConnection(GuiService.MenuClosed:Connect(function()
+		task.defer(enforceFrontOrder)
+	end))
+end)
+
+-- ตรวจซ้ำเป็นระยะ เผื่อเกมแก้ ZIndex ของ GUI ระหว่างเล่น
+task.spawn(function()
+	while not scriptClosed and UI.screenGui and UI.screenGui.Parent do
+		enforceFrontOrder()
+		task.wait(2)
+	end
+end)
+
+enforceFrontOrder()
+
 local function minimizeMenu()
 	if scriptClosed then
 		return
@@ -2307,6 +3256,7 @@ local function minimizeMenu()
 	UI.logoButton.Position = UDim2.new(0.5, 0, 0, 100)
 
 	UI.logoButton.Visible = true
+	enforceFrontOrder()
 end
 
 local function restoreMenu()
@@ -2316,6 +3266,7 @@ local function restoreMenu()
 
 	UI.mainFrame.Visible = true
 	UI.logoButton.Visible = false
+	enforceFrontOrder()
 end
 
 
@@ -2450,6 +3401,15 @@ local function closeScript()
 	Addons.setAutoEEnabled(false)
 	table.clear(visibleEPrompts)
 
+	stopAllEffects(true)
+
+	setPlayerESPEnabled(false)
+	for targetPlayer, connection in pairs(playerESPCharacterConnections) do
+		if connection then
+			connection:Disconnect()
+		end
+		playerESPCharacterConnections[targetPlayer] = nil
+	end
 
 	local humanoid = getHumanoid()
 
@@ -2605,5 +3565,8 @@ task.defer(function()
 	updateAutoClickSlider()
 	updateAutoClickInterface()
 	Addons.updateAutoEInterface()
+
+	updateEffectInterface()
+	updateESPInterface()
 
 end)
