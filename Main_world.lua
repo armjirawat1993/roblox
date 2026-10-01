@@ -48,21 +48,6 @@ local Config = {
 	-- GUI
 	ToggleKey = Enum.KeyCode.RightShift,
 
-	-- Damage / Auto Attack
-	AutoAttackEnabled = false,
-
-	LockAttackRadius = true,
-	AttackRadius = 25,
-	LockedAttackRadius = 25,
-	MinAttackRadius = 3,
-	MaxAttackRadius = 50,
-
-	AttackInterval = 0.35,
-	MinAttackInterval = 0.05,
-	MaxAttackInterval = 1,
-
-	MaxAttackTargets = 20,
-	OnlyNPC = true,
 	-- Auto Click
 	AutoClickEnabled = false,
 
@@ -77,14 +62,6 @@ local Config = {
 	AutoEInterval = 0.01,
 	AutoEHoldTime = 0.01,
 
-	-- Crystals
-	RemoveCrystalLightEnabled = true,
-	RemoveLowPriceCrystalsEnabled = false,
-	MinimumCrystalPrice = 10000000,
-	CrystalScanInterval = 0.1,
-
-	-- Boulder ESP
-	BoulderESPEnabled = true,
 
 }
 
@@ -110,9 +87,6 @@ local flyGyro = nil
 local savedPositions = {}
 local nextPositionId = 0
 
-local autoAttackConnection = nil
-local lastAutoAttackTime = 0
-local radiusLockConnection = nil
 
 local autoClickConnection = nil
 local lastAutoClickTime = 0
@@ -120,12 +94,6 @@ local lastAutoClickTime = 0
 local autoEThread = nil
 local visibleEPrompts = {}
 
-local crystalLoopThread = nil
-local crystalOriginalBrightness = {}
-local hiddenCrystalParts = {}
-
-local boulderESPConnection = nil
-local BOULDER_ESP_NAME = "MainWorldBoulderESP"
 
 local Noclip = {
 	Connection = nil,
@@ -651,7 +619,7 @@ local function teleportToCFrame(targetCFrame)
 end
 
 --==================================================
--- [10.2] AUTO ATTACK / DAMAGE AREA
+-- [10.3] AUTO CLICK
 --==================================================
 
 local function getEquippedTool()
@@ -664,186 +632,6 @@ local function getEquippedTool()
 	return character:FindFirstChildOfClass("Tool")
 end
 
-local function isValidAttackTarget(model, humanoid)
-	local character = getCharacter()
-
-	if not model or not humanoid then
-		return false
-	end
-
-	if model == character then
-		return false
-	end
-
-	if humanoid.Health <= 0 then
-		return false
-	end
-
-	if Config.OnlyNPC then
-		local targetPlayer = Players:GetPlayerFromCharacter(model)
-
-		if targetPlayer then
-			return false
-		end
-	end
-
-	return true
-end
-
-local function getNearbyAttackTargets()
-	local character = getCharacter()
-	local rootPart = getRootPart()
-
-	if not character or not rootPart then
-		return {}
-	end
-
-	local overlapParams = OverlapParams.new()
-	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-	overlapParams.FilterDescendantsInstances = {
-		character,
-	}
-	overlapParams.MaxParts = 250
-
-	local nearbyParts = Workspace:GetPartBoundsInRadius(
-		rootPart.Position,
-		Config.AttackRadius,
-		overlapParams
-	)
-
-	local targets = {}
-	local foundHumanoids = {}
-
-	for _, part in ipairs(nearbyParts) do
-		local model = part:FindFirstAncestorOfClass("Model")
-
-		local humanoid = model
-			and model:FindFirstChildOfClass("Humanoid")
-
-		if isValidAttackTarget(model, humanoid)
-			and not foundHumanoids[humanoid] then
-
-			foundHumanoids[humanoid] = true
-
-			table.insert(targets, {
-				Model = model,
-				Humanoid = humanoid,
-			})
-
-			if #targets >= Config.MaxAttackTargets then
-				break
-			end
-		end
-	end
-
-	return targets
-end
-
-local function performAutoAttack()
-	if scriptClosed or not Config.AutoAttackEnabled then
-		return
-	end
-
-	local tool = getEquippedTool()
-
-	-- ทำงานเฉพาะตอนถืออาวุธหรือ Tool
-	if not tool then
-		return
-	end
-
-	local targets = getNearbyAttackTargets()
-
-	if #targets == 0 then
-		return
-	end
-
-	tool:Activate()
-end
-
-local function stopAutoAttack()
-	Config.AutoAttackEnabled = false
-
-	if autoAttackConnection then
-		autoAttackConnection:Disconnect()
-		autoAttackConnection = nil
-	end
-end
-
-local function startAutoAttack()
-	if autoAttackConnection then
-		autoAttackConnection:Disconnect()
-		autoAttackConnection = nil
-	end
-
-	Config.AutoAttackEnabled = true
-	lastAutoAttackTime = 0
-
-	autoAttackConnection = RunService.Heartbeat:Connect(function()
-		if scriptClosed or not Config.AutoAttackEnabled then
-			return
-		end
-
-		local currentTime = os.clock()
-
-		if currentTime - lastAutoAttackTime
-			< Config.AttackInterval then
-
-			return
-		end
-
-		lastAutoAttackTime = currentTime
-
-		performAutoAttack()
-	end)
-end
-
-local function setAutoAttackEnabled(enabled)
-	if enabled then
-		startAutoAttack()
-	else
-		stopAutoAttack()
-	end
-end
-
-local function stopRadiusLock()
-	if radiusLockConnection then
-		radiusLockConnection:Disconnect()
-		radiusLockConnection = nil
-	end
-end
-
-local function startRadiusLock()
-	stopRadiusLock()
-
-	Config.LockAttackRadius = true
-	Config.LockedAttackRadius = Config.AttackRadius
-
-	radiusLockConnection = RunService.Heartbeat:Connect(function()
-		if scriptClosed or not Config.LockAttackRadius then
-			return
-		end
-
-		if Config.AttackRadius ~= Config.LockedAttackRadius then
-			Config.AttackRadius =
-				Config.LockedAttackRadius
-		end
-	end)
-end
-
-local function setRadiusLockEnabled(enabled)
-	Config.LockAttackRadius = enabled
-
-	if enabled then
-		Config.LockedAttackRadius = Config.AttackRadius
-		startRadiusLock()
-	else
-		stopRadiusLock()
-	end
-end
-
---==================================================
--- [10.3] AUTO CLICK
---==================================================
 
 local function performAutoClick()
 	if scriptClosed or not Config.AutoClickEnabled then
@@ -915,7 +703,7 @@ local Addons = {}
 
 do
 	--==================================================
-	-- [10.4] AUTO E / CRYSTALS / BOULDER ESP
+	-- [10.4] AUTO E
 	--==================================================
 
 	function Addons.setAutoEEnabled(enabled)
@@ -1001,366 +789,6 @@ do
 	addConnection(ProximityPromptService.PromptHidden:Connect(function(prompt)
 		visibleEPrompts[prompt] = nil
 	end))
-
-	local function getCrystalsFolder()
-		local things = Workspace:FindFirstChild("Things")
-		return things and things:FindFirstChild("Crystals")
-	end
-
-	function Addons.parseCrystalValue(value)
-		if value == nil then
-			return nil
-		end
-
-		if typeof(value) == "number" then
-			return value
-		end
-
-		local valueText = tostring(value)
-			:gsub(",", "")
-			:gsub("%s+", "")
-			:gsub("%$", "")
-			:lower()
-
-		local numberText = valueText:match("%-?%d+%.?%d*")
-		local number = numberText and tonumber(numberText)
-
-		if not number then
-			return nil
-		end
-
-		if valueText:find("b", 1, true) then
-			number *= 1000000000
-		elseif valueText:find("m", 1, true) then
-			number *= 1000000
-		elseif valueText:find("k", 1, true) then
-			number *= 1000
-		end
-
-		return number
-	end
-
-	local function getCrystalValue(crystal)
-		if crystal:IsA("NumberValue")
-			or crystal:IsA("IntValue")
-			or crystal:IsA("StringValue") then
-
-			return Addons.parseCrystalValue(crystal.Value)
-		end
-
-		for name, value in pairs(crystal:GetAttributes()) do
-			local lower = string.lower(name)
-
-			if lower:find("value", 1, true)
-				or lower:find("price", 1, true)
-				or lower == "worth"
-				or lower == "cost" then
-
-				local parsed = Addons.parseCrystalValue(value)
-
-				if parsed then
-					return parsed
-				end
-			end
-		end
-
-		for _, object in ipairs(crystal:GetDescendants()) do
-			local lower = string.lower(object.Name)
-			local relevant =
-				lower:find("value", 1, true)
-				or lower:find("price", 1, true)
-				or lower == "worth"
-				or lower == "cost"
-
-			if relevant then
-				if object:IsA("ValueBase") then
-					local parsed = Addons.parseCrystalValue(object.Value)
-
-					if parsed then
-						return parsed
-					end
-				elseif object:IsA("TextLabel")
-					or object:IsA("TextButton")
-					or object:IsA("TextBox") then
-
-					local parsed = Addons.parseCrystalValue(object.Text)
-
-					if parsed then
-						return parsed
-					end
-				end
-			end
-		end
-
-		return Addons.parseCrystalValue(crystal.Name)
-	end
-
-	local function restoreCrystal(crystal)
-		local saved = hiddenCrystalParts[crystal]
-
-		if not saved then
-			return
-		end
-
-		for object, value in pairs(saved) do
-			if object and object.Parent then
-				if object:IsA("BasePart") then
-					object.LocalTransparencyModifier = value
-				elseif object:IsA("ParticleEmitter")
-					or object:IsA("Trail")
-					or object:IsA("Beam") then
-
-					object.Enabled = value
-				end
-			end
-		end
-
-		hiddenCrystalParts[crystal] = nil
-	end
-
-	local function hideCrystal(crystal)
-		if hiddenCrystalParts[crystal] then
-			return
-		end
-
-		local saved = {}
-		hiddenCrystalParts[crystal] = saved
-
-		for _, object in ipairs(crystal:GetDescendants()) do
-			if object:IsA("BasePart") then
-				saved[object] = object.LocalTransparencyModifier
-				object.LocalTransparencyModifier = 1
-			elseif object:IsA("ParticleEmitter")
-				or object:IsA("Trail")
-				or object:IsA("Beam") then
-
-				saved[object] = object.Enabled
-				object.Enabled = false
-			end
-		end
-	end
-
-	function Addons.restoreAllCrystals()
-		for crystal in pairs(hiddenCrystalParts) do
-			if crystal and crystal.Parent then
-				restoreCrystal(crystal)
-			end
-		end
-
-		table.clear(hiddenCrystalParts)
-	end
-
-	function Addons.applyCrystalLights()
-		local folder = getCrystalsFolder()
-
-		if not folder then
-			return 0
-		end
-
-		local changed = 0
-
-		for _, object in ipairs(folder:GetDescendants()) do
-			if object.Name == "CrystalGlow"
-				and object:IsA("Light") then
-
-				if crystalOriginalBrightness[object] == nil then
-					crystalOriginalBrightness[object] =
-						object.Brightness
-				end
-
-				if Config.RemoveCrystalLightEnabled then
-					object.Brightness = 0
-					changed += 1
-				end
-			end
-		end
-
-		return changed
-	end
-
-	function Addons.restoreCrystalLights()
-		for light, brightness in pairs(crystalOriginalBrightness) do
-			if light and light.Parent then
-				light.Brightness = brightness
-			end
-		end
-
-		table.clear(crystalOriginalBrightness)
-	end
-
-	function Addons.applyLowPriceFilter()
-		local folder = getCrystalsFolder()
-
-		if not folder then
-			return 0, 0, 0
-		end
-
-		local checked = 0
-		local hidden = 0
-		local noValue = 0
-
-		for _, crystal in ipairs(folder:GetChildren()) do
-			checked += 1
-
-			local value = getCrystalValue(crystal)
-
-			if value then
-				if Config.RemoveLowPriceCrystalsEnabled
-					and value < Config.MinimumCrystalPrice then
-
-					hideCrystal(crystal)
-					hidden += 1
-				else
-					restoreCrystal(crystal)
-				end
-			else
-				noValue += 1
-			end
-		end
-
-		return checked, hidden, noValue
-	end
-
-	local BOULDER_COLORS = {
-		Color3.fromRGB(0, 200, 255),
-		Color3.fromRGB(0, 255, 100),
-		Color3.fromRGB(255, 230, 0),
-		Color3.fromRGB(180, 0, 255),
-		Color3.fromRGB(0, 80, 255),
-		Color3.fromRGB(255, 70, 180),
-	}
-
-	local function getBouldersFolder()
-		local mountain =
-			Workspace:FindFirstChild("MountainDecorations")
-
-		return mountain and mountain:FindFirstChild("Boulders")
-	end
-
-	local function addBoulderESP(container, index)
-		if not Config.BoulderESPEnabled or not container then
-			return
-		end
-
-		if not (
-			container:IsA("Model")
-			or container:IsA("Folder")
-			or container:IsA("BasePart")
-		) then
-			return
-		end
-
-		local highlight =
-			container:FindFirstChild(BOULDER_ESP_NAME)
-
-		if not highlight then
-			highlight = Instance.new("Highlight")
-			highlight.Name = BOULDER_ESP_NAME
-			highlight.Adornee = container
-			highlight.FillTransparency = 0.45
-			highlight.OutlineTransparency = 0
-			highlight.DepthMode =
-				Enum.HighlightDepthMode.AlwaysOnTop
-			highlight.Parent = container
-		end
-
-		local color =
-			BOULDER_COLORS[
-				((index or 1) - 1) % #BOULDER_COLORS + 1
-			]
-
-		highlight.FillColor = color
-		highlight.OutlineColor = color
-		highlight.Enabled = true
-	end
-
-	local function removeBoulderESP()
-		local folder = getBouldersFolder()
-
-		if not folder then
-			return
-		end
-
-		for _, object in ipairs(folder:GetDescendants()) do
-			if object:IsA("Highlight")
-				and object.Name == BOULDER_ESP_NAME then
-
-				object:Destroy()
-			end
-		end
-	end
-
-	function Addons.scanBoulderESP()
-		local folder = getBouldersFolder()
-
-		if not folder then
-			return 0
-		end
-
-		local list = folder:GetChildren()
-
-		table.sort(list, function(a, b)
-			return string.lower(a.Name)
-				< string.lower(b.Name)
-		end)
-
-		for index, container in ipairs(list) do
-			addBoulderESP(container, index)
-		end
-
-		return #list
-	end
-
-	function Addons.setBoulderESPEnabled(enabled)
-		Config.BoulderESPEnabled = enabled
-
-		if boulderESPConnection then
-			boulderESPConnection:Disconnect()
-			boulderESPConnection = nil
-		end
-
-		if not enabled then
-			removeBoulderESP()
-			return
-		end
-
-		Addons.scanBoulderESP()
-
-		local folder = getBouldersFolder()
-
-		if folder then
-			boulderESPConnection =
-				folder.ChildAdded:Connect(function(container)
-					task.wait()
-					addBoulderESP(container, #folder:GetChildren())
-				end)
-		end
-	end
-
-	function Addons.stopCrystalLoop()
-		if crystalLoopThread then
-			task.cancel(crystalLoopThread)
-			crystalLoopThread = nil
-		end
-	end
-
-	function Addons.startCrystalLoop()
-		Addons.stopCrystalLoop()
-
-		crystalLoopThread = task.spawn(function()
-			while not scriptClosed do
-				if Config.RemoveCrystalLightEnabled then
-					Addons.applyCrystalLights()
-				end
-
-				if Config.RemoveLowPriceCrystalsEnabled then
-					Addons.applyLowPriceFilter()
-				end
-
-				task.wait(Config.CrystalScanInterval)
-			end
-		end)
-	end
 
 end
 
@@ -1587,17 +1015,9 @@ local worldTab, worldContent =
 local positionTab, positionContent =
 	createTab("Position", 3)
 
-local damageTab, damageContent =
-	createTab("Auto Damage", 4)
-
 local autoClickTab, autoClickContent =
-	createTab("Auto Click", 5)
+	createTab("Auto Click", 4)
 
-local crystalsTab, crystalsContent =
-	createTab("Crystals", 6)
-
-local findCrystalsTab, findCrystalsContent =
-	createTab("Find Crystals", 7)
 
 local function showTab(tabName)
 	for name, page in pairs(pages) do
@@ -2602,279 +2022,6 @@ addConnection(UI.positionNameInput.FocusLost:Connect(function(enterPressed)
 end))
 
 --==================================================
--- [24.4] DAMAGE TAB GUI
---==================================================
-
-UI.damageTitle = Instance.new("TextLabel")
-UI.damageTitle.Size = UDim2.new(1, 0, 0, 35)
-UI.damageTitle.BackgroundTransparency = 1
-UI.damageTitle.Text = "Damage / Auto Attack"
-UI.damageTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-UI.damageTitle.TextSize = 20
-UI.damageTitle.Font = Enum.Font.GothamBold
-UI.damageTitle.TextXAlignment = Enum.TextXAlignment.Left
-UI.damageTitle.LayoutOrder = 1
-UI.damageTitle.Parent = damageContent
-
-UI.autoAttackButton = createPageButton(
-	damageContent,
-	"Auto Attack: OFF",
-	2
-)
-
-local attackRadiusLabel,
-	attackRadiusSlider,
-	attackRadiusFill,
-	attackRadiusKnob = createSliderGroup(
-		damageContent,
-		"Attack Radius: " .. Config.AttackRadius,
-		3
-	)
-
-local attackSpeedLabel,
-	attackSpeedSlider,
-	attackSpeedFill,
-	attackSpeedKnob = createSliderGroup(
-		damageContent,
-		"Attack Interval: " .. Config.AttackInterval,
-		4
-	)
-
-UI.onlyNPCButton = createPageButton(
-	damageContent,
-	"Only NPC: ON",
-	5
-)
-
-UI.lockRadiusButton = createPageButton(
-	damageContent,
-	"Lock Radius: ON",
-	5
-)
-
-
-UI.damageInfoLabel = Instance.new("TextLabel")
-UI.damageInfoLabel.Size = UDim2.new(1, 0, 0, 90)
-UI.damageInfoLabel.BackgroundTransparency = 1
-UI.damageInfoLabel.Text =
-	"Auto Attack จะทำงานเฉพาะตอนถือ Tool\n"
-	.. "Radius = ระยะตรวจหาเป้าหมาย\n"
-	.. "Interval ต่ำ = โจมตีเร็วขึ้น"
-UI.damageInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
-UI.damageInfoLabel.TextSize = 13
-UI.damageInfoLabel.Font = Enum.Font.Gotham
-UI.damageInfoLabel.TextWrapped = true
-UI.damageInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.damageInfoLabel.LayoutOrder = 6
-UI.damageInfoLabel.Parent = damageContent
-
-local function updateDamageInterface()
-	if scriptClosed then
-		return
-	end
-
-	setButtonState(
-		UI.autoAttackButton,
-		"Auto Attack",
-		Config.AutoAttackEnabled
-	)
-
-	setButtonState(
-		UI.onlyNPCButton,
-		"Only NPC",
-		Config.OnlyNPC
-	)
-
-	setButtonState(
-		UI.lockRadiusButton,
-		"Lock Radius",
-		Config.LockAttackRadius
-	)
-	attackRadiusLabel.Text =
-		"Attack Radius: "
-		.. tostring(Config.AttackRadius)
-
-	attackSpeedLabel.Text =
-		"Attack Interval: "
-		.. string.format("%.2f", Config.AttackInterval)
-end
-
-
-local function updateAttackRadiusSlider()
-	updateSliderVisual(
-		Config.AttackRadius,
-		Config.MinAttackRadius,
-		Config.MaxAttackRadius,
-		attackRadiusFill,
-		attackRadiusKnob
-	)
-end
-
-local function updateAttackSpeedSlider()
-	updateSliderVisual(
-		Config.AttackInterval,
-		Config.MinAttackInterval,
-		Config.MaxAttackInterval,
-		attackSpeedFill,
-		attackSpeedKnob
-	)
-end
-
-local function setAttackRadiusFromPosition(position)
-	local width = attackRadiusSlider.AbsoluteSize.X
-
-	if width <= 0 then
-		return
-	end
-
-	local percent = math.clamp(
-		(position.X - attackRadiusSlider.AbsolutePosition.X) / width,
-		0,
-		1
-	)
-
-	local value =
-		Config.MinAttackRadius
-		+ (
-			Config.MaxAttackRadius
-			- Config.MinAttackRadius
-		) * percent
-
-	Config.AttackRadius = math.floor(value + 0.5)
-
-	if Config.LockAttackRadius then
-		Config.LockedAttackRadius = Config.AttackRadius
-	end
-
-	updateAttackRadiusSlider()
-	updateDamageInterface()
-end
-
-local function setAttackSpeedFromPosition(position)
-	local width = attackSpeedSlider.AbsoluteSize.X
-
-	if width <= 0 then
-		return
-	end
-
-	local percent = math.clamp(
-		(
-			position.X
-			- attackSpeedSlider.AbsolutePosition.X
-		) / width,
-		0,
-		1
-	)
-
-	local value =
-		Config.MinAttackInterval
-		+ (
-			Config.MaxAttackInterval
-			- Config.MinAttackInterval
-		) * percent
-
-	-- เก็บทศนิยม 2 ตำแหน่ง
-	Config.AttackInterval =
-		math.floor(value * 100 + 0.5) / 100
-
-	updateAttackSpeedSlider()
-	updateDamageInterface()
-end
-
-UI.State.draggingAttackRadiusSlider = false
-UI.State.draggingAttackSpeedSlider = false
-
-local function beginAttackRadiusSlider(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-
-		UI.State.draggingAttackRadiusSlider = true
-		setAttackRadiusFromPosition(input.Position)
-	end
-end
-
-local function beginAttackSpeedSlider(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-
-		UI.State.draggingAttackSpeedSlider = true
-		setAttackSpeedFromPosition(input.Position)
-	end
-end
-
-addConnection(
-	attackRadiusSlider.InputBegan:Connect(
-		beginAttackRadiusSlider
-	)
-)
-
-addConnection(
-	attackRadiusKnob.InputBegan:Connect(
-		beginAttackRadiusSlider
-	)
-)
-
-addConnection(
-	attackSpeedSlider.InputBegan:Connect(
-		beginAttackSpeedSlider
-	)
-)
-
-addConnection(
-	attackSpeedKnob.InputBegan:Connect(
-		beginAttackSpeedSlider
-	)
-)
-
-addConnection(UserInputService.InputChanged:Connect(function(input)
-	if input.UserInputType ~= Enum.UserInputType.MouseMovement
-		and input.UserInputType ~= Enum.UserInputType.Touch then
-
-		return
-	end
-
-	if UI.State.draggingAttackRadiusSlider then
-		setAttackRadiusFromPosition(input.Position)
-	end
-
-	if UI.State.draggingAttackSpeedSlider then
-		setAttackSpeedFromPosition(input.Position)
-	end
-end))
-
-addConnection(UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-
-		UI.State.draggingAttackRadiusSlider = false
-		UI.State.draggingAttackSpeedSlider = false
-	end
-end))
-
-addConnection(UI.autoAttackButton.MouseButton1Click:Connect(function()
-	setAutoAttackEnabled(
-		not Config.AutoAttackEnabled
-	)
-
-	updateDamageInterface()
-end))
-
-addConnection(UI.onlyNPCButton.MouseButton1Click:Connect(function()
-	Config.OnlyNPC = not Config.OnlyNPC
-
-	updateDamageInterface()
-end))
-
-addConnection(UI.lockRadiusButton.MouseButton1Click:Connect(function()
-	setRadiusLockEnabled(
-		not Config.LockAttackRadius
-	)
-
-	updateDamageInterface()
-end))
-
-
---==================================================
 -- [24.5] AUTO CLICK TAB GUI
 --==================================================
 
@@ -3046,7 +2193,7 @@ end))
 
 do
 	--==================================================
-	-- [24.6] AUTO E / CRYSTALS / FIND CRYSTALS GUI
+	-- [24.6] AUTO E GUI
 	--==================================================
 
 	local autoEButton = createPageButton(
@@ -3060,7 +2207,7 @@ do
 	autoEInfoLabel.BackgroundTransparency = 1
 	autoEInfoLabel.Text =
 		"Auto E กด ProximityPrompt ปุ่ม E อัตโนมัติ\n"
-		.. "กด R เพื่อเปิด/ปิด | Interval: "
+		.. "กด H เพื่อเปิด/ปิด | Interval: "
 		.. string.format("%.2f", Config.AutoEInterval)
 	autoEInfoLabel.TextColor3 =
 		Color3.fromRGB(165, 165, 175)
@@ -3085,218 +2232,6 @@ do
 		Addons.updateAutoEInterface()
 	end))
 
-	local crystalsTitle = Instance.new("TextLabel")
-	crystalsTitle.Size = UDim2.new(1, 0, 0, 35)
-	crystalsTitle.BackgroundTransparency = 1
-	crystalsTitle.Text = "Crystals"
-	crystalsTitle.TextColor3 =
-		Color3.fromRGB(255, 255, 255)
-	crystalsTitle.TextSize = 20
-	crystalsTitle.Font = Enum.Font.GothamBold
-	crystalsTitle.TextXAlignment =
-		Enum.TextXAlignment.Left
-	crystalsTitle.LayoutOrder = 1
-	crystalsTitle.Parent = crystalsContent
-
-	local removeLightButton = createPageButton(
-		crystalsContent,
-		"Remove Crystal Light: ON",
-		2
-	)
-
-	local removeLowPriceButton = createPageButton(
-		crystalsContent,
-		"Remove Low Price Crystals: OFF",
-		3
-	)
-
-	local crystalPriceInput = Instance.new("TextBox")
-	crystalPriceInput.Size = UDim2.new(1, 0, 0, 42)
-	crystalPriceInput.BackgroundColor3 =
-		Color3.fromRGB(52, 52, 63)
-	crystalPriceInput.BorderSizePixel = 0
-	crystalPriceInput.Text =
-		tostring(Config.MinimumCrystalPrice)
-	crystalPriceInput.PlaceholderText =
-		"ราคาขั้นต่ำ เช่น 10000000 หรือ 10M"
-	crystalPriceInput.TextColor3 =
-		Color3.fromRGB(255, 255, 255)
-	crystalPriceInput.PlaceholderColor3 =
-		Color3.fromRGB(145, 145, 155)
-	crystalPriceInput.TextSize = 14
-	crystalPriceInput.Font = Enum.Font.Gotham
-	crystalPriceInput.ClearTextOnFocus = false
-	crystalPriceInput.LayoutOrder = 4
-	crystalPriceInput.Parent = crystalsContent
-
-	Instance.new("UICorner", crystalPriceInput).CornerRadius =
-		UDim.new(0, 8)
-
-	local applyPriceButton = createPageButton(
-		crystalsContent,
-		"Apply Minimum Price",
-		5
-	)
-
-	local crystalStatus = Instance.new("TextLabel")
-	crystalStatus.Size = UDim2.new(1, 0, 0, 65)
-	crystalStatus.BackgroundTransparency = 1
-	crystalStatus.Text =
-		"Remove Light: ON | Low Price: OFF"
-	crystalStatus.TextColor3 =
-		Color3.fromRGB(175, 175, 185)
-	crystalStatus.TextSize = 13
-	crystalStatus.Font = Enum.Font.Gotham
-	crystalStatus.TextWrapped = true
-	crystalStatus.TextXAlignment =
-		Enum.TextXAlignment.Left
-	crystalStatus.LayoutOrder = 6
-	crystalStatus.Parent = crystalsContent
-
-	function Addons.updateCrystalsInterface()
-		setButtonState(
-			removeLightButton,
-			"Remove Crystal Light",
-			Config.RemoveCrystalLightEnabled
-		)
-
-		setButtonState(
-			removeLowPriceButton,
-			"Remove Low Price Crystals",
-			Config.RemoveLowPriceCrystalsEnabled
-		)
-	end
-
-	local function applyPriceInput()
-		local value = Addons.parseCrystalValue(crystalPriceInput.Text)
-
-		if not value then
-			crystalStatus.Text = "กรุณากรอกราคาที่ถูกต้อง"
-			crystalStatus.TextColor3 =
-				Color3.fromRGB(235, 100, 100)
-			return
-		end
-
-		Config.MinimumCrystalPrice =
-			math.max(0, math.floor(value))
-
-		crystalPriceInput.Text =
-			tostring(Config.MinimumCrystalPrice)
-
-		local checked, hidden, noValue =
-			Addons.applyLowPriceFilter()
-
-		crystalStatus.Text = string.format(
-			"ตรวจ %d | ซ่อน %d | ไม่พบค่า %d",
-			checked,
-			hidden,
-			noValue
-		)
-
-		crystalStatus.TextColor3 =
-			Color3.fromRGB(90, 220, 130)
-	end
-
-	addConnection(removeLightButton.MouseButton1Click:Connect(function()
-		Config.RemoveCrystalLightEnabled =
-			not Config.RemoveCrystalLightEnabled
-
-		if Config.RemoveCrystalLightEnabled then
-			local changed = Addons.applyCrystalLights()
-			crystalStatus.Text =
-				"ปิดแสง Crystal: "
-				.. tostring(changed)
-		else
-			Addons.restoreCrystalLights()
-			crystalStatus.Text = "คืนค่าแสง Crystal แล้ว"
-		end
-
-		Addons.updateCrystalsInterface()
-	end))
-
-	addConnection(removeLowPriceButton.MouseButton1Click:Connect(function()
-		Config.RemoveLowPriceCrystalsEnabled =
-			not Config.RemoveLowPriceCrystalsEnabled
-
-		if Config.RemoveLowPriceCrystalsEnabled then
-			applyPriceInput()
-		else
-			Addons.restoreAllCrystals()
-			crystalStatus.Text =
-				"คืนค่า Crystal ที่ซ่อนแล้ว"
-		end
-
-		Addons.updateCrystalsInterface()
-	end))
-
-	addConnection(applyPriceButton.MouseButton1Click:Connect(
-		applyPriceInput
-	))
-
-	addConnection(crystalPriceInput.FocusLost:Connect(function(enterPressed)
-		if enterPressed then
-			applyPriceInput()
-		end
-	end))
-
-	local findCrystalsTitle = Instance.new("TextLabel")
-	findCrystalsTitle.Size = UDim2.new(1, 0, 0, 35)
-	findCrystalsTitle.BackgroundTransparency = 1
-	findCrystalsTitle.Text = "Find Crystals"
-	findCrystalsTitle.TextColor3 =
-		Color3.fromRGB(255, 255, 255)
-	findCrystalsTitle.TextSize = 20
-	findCrystalsTitle.Font = Enum.Font.GothamBold
-	findCrystalsTitle.TextXAlignment =
-		Enum.TextXAlignment.Left
-	findCrystalsTitle.LayoutOrder = 1
-	findCrystalsTitle.Parent = findCrystalsContent
-
-	local boulderESPButton = createPageButton(
-		findCrystalsContent,
-		"Boulder ESP: ON",
-		2
-	)
-
-	local boulderESPStatus = Instance.new("TextLabel")
-	boulderESPStatus.Size = UDim2.new(1, 0, 0, 70)
-	boulderESPStatus.BackgroundTransparency = 1
-	boulderESPStatus.Text =
-		"Highlight หินใน MountainDecorations > Boulders"
-	boulderESPStatus.TextColor3 =
-		Color3.fromRGB(175, 175, 185)
-	boulderESPStatus.TextSize = 13
-	boulderESPStatus.Font = Enum.Font.Gotham
-	boulderESPStatus.TextWrapped = true
-	boulderESPStatus.TextXAlignment =
-		Enum.TextXAlignment.Left
-	boulderESPStatus.LayoutOrder = 3
-	boulderESPStatus.Parent = findCrystalsContent
-
-	function Addons.updateFindCrystalsInterface()
-		setButtonState(
-			boulderESPButton,
-			"Boulder ESP",
-			Config.BoulderESPEnabled
-		)
-	end
-
-	addConnection(boulderESPButton.MouseButton1Click:Connect(function()
-		Addons.setBoulderESPEnabled(not Config.BoulderESPEnabled)
-
-		if Config.BoulderESPEnabled then
-			boulderESPStatus.Text =
-				"เปิด Boulder ESP แล้ว: "
-				.. tostring(Addons.scanBoulderESP())
-				.. " Object"
-		else
-			boulderESPStatus.Text =
-				"ปิด Boulder ESP แล้ว"
-		end
-
-		Addons.updateFindCrystalsInterface()
-	end))
-
 end
 
 --==================================================
@@ -3316,15 +2251,6 @@ addConnection(positionTab.MouseButton1Click:Connect(function()
 	refreshPositionList()
 end))
 
-addConnection(damageTab.MouseButton1Click:Connect(function()
-	showTab("Auto Damage")
-
-	updateAttackRadiusSlider()
-	updateAttackSpeedSlider()
-	updateDamageInterface()
-end))
-
-
 addConnection(autoClickTab.MouseButton1Click:Connect(function()
 	showTab("Auto Click")
 
@@ -3333,15 +2259,6 @@ addConnection(autoClickTab.MouseButton1Click:Connect(function()
 	Addons.updateAutoEInterface()
 end))
 
-addConnection(crystalsTab.MouseButton1Click:Connect(function()
-	showTab("Crystals")
-	Addons.updateCrystalsInterface()
-end))
-
-addConnection(findCrystalsTab.MouseButton1Click:Connect(function()
-	showTab("Find Crystals")
-	Addons.updateFindCrystalsInterface()
-end))
 
 
 --==================================================
@@ -3527,23 +2444,12 @@ local function closeScript()
 	stopFly()
 	disconnectWalkSpeedLock()
 
-	stopAutoAttack()
-
-	Config.LockAttackRadius = false
-	stopRadiusLock()
 
 	stopAutoClick()
 
 	Addons.setAutoEEnabled(false)
 	table.clear(visibleEPrompts)
 
-	Config.RemoveCrystalLightEnabled = false
-	Config.RemoveLowPriceCrystalsEnabled = false
-	Addons.stopCrystalLoop()
-	Addons.restoreCrystalLights()
-	Addons.restoreAllCrystals()
-
-	Addons.setBoulderESPEnabled(false)
 
 	local humanoid = getHumanoid()
 
@@ -3624,8 +2530,8 @@ addConnection(UserInputService.InputBegan:Connect(function(
 		return
 	end
 
-	-- กด R เพื่อเปิด/ปิด Auto E
-	if input.KeyCode == Enum.KeyCode.R then
+	-- กด H เพื่อเปิด/ปิด Auto E
+	if input.KeyCode == Enum.KeyCode.H then
 		Addons.setAutoEEnabled(not Config.AutoEEnabled)
 		Addons.updateAutoEInterface()
 	end
@@ -3695,24 +2601,9 @@ task.defer(function()
 	refreshPlayerList()
 	refreshPositionList()
 
-	updateAttackRadiusSlider()
-	updateAttackSpeedSlider()
-	updateDamageInterface()
 
 	updateAutoClickSlider()
 	updateAutoClickInterface()
 	Addons.updateAutoEInterface()
 
-	Addons.updateCrystalsInterface()
-	Addons.updateFindCrystalsInterface()
-
-	if Config.RemoveCrystalLightEnabled then
-		Addons.applyCrystalLights()
-	end
-
-	if Config.BoulderESPEnabled then
-		Addons.setBoulderESPEnabled(true)
-	end
-
-	Addons.startCrystalLoop()
 end)
