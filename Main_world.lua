@@ -67,12 +67,14 @@ local Config = {
 
 	-- Effect
 	DayModeEnabled = false,
+	DaySkyEnabled = false,
 	RemoveFogEnabled = false,
 	RemoveBlurEnabled = false,
 	RemoveAtmosphereEnabled = false,
 	RemoveDecalsEnabled = false,
 	RemoveShadowsEnabled = false,
 	RemoveReflectionsEnabled = false,
+	RemoveCloudsEnabled = false,
 	EffectRefreshInterval = 5,
 	DayClockTime = 14,
 
@@ -112,6 +114,8 @@ local visibleEPrompts = {}
 
 local effectThread = nil
 local originalDayClockTime = nil
+local originalSkyStates = {}
+local createdDaySky = nil
 local originalFogSettings = nil
 local originalBlurStates = {}
 local originalAtmosphereParents = {}
@@ -120,6 +124,7 @@ local originalGlobalShadows = nil
 local originalCastShadowStates = {}
 local originalEnvironmentSpecularScale = nil
 local originalReflectanceValues = {}
+local originalCloudParents = {}
 
 local playerESPHighlights = {}
 local playerESPCharacterConnections = {}
@@ -828,12 +833,14 @@ end
 
 local function anyEffectEnabled()
 	return Config.DayModeEnabled
+		or Config.DaySkyEnabled
 		or Config.RemoveFogEnabled
 		or Config.RemoveBlurEnabled
 		or Config.RemoveAtmosphereEnabled
 		or Config.RemoveDecalsEnabled
 		or Config.RemoveShadowsEnabled
 		or Config.RemoveReflectionsEnabled
+		or Config.RemoveCloudsEnabled
 end
 
 local function applyDayMode()
@@ -842,6 +849,102 @@ local function applyDayMode()
 	end
 
 	Lighting.ClockTime = Config.DayClockTime
+end
+
+local DAY_SKY_TEXTURES = {
+	SkyboxBk = "rbxasset://textures/sky/sky512_bk.tex",
+	SkyboxDn = "rbxasset://textures/sky/sky512_dn.tex",
+	SkyboxFt = "rbxasset://textures/sky/sky512_ft.tex",
+	SkyboxLf = "rbxasset://textures/sky/sky512_lf.tex",
+	SkyboxRt = "rbxasset://textures/sky/sky512_rt.tex",
+	SkyboxUp = "rbxasset://textures/sky/sky512_up.tex",
+}
+
+local function saveSkyState(sky)
+	if originalSkyStates[sky] ~= nil then
+		return
+	end
+
+	originalSkyStates[sky] = {
+		SkyboxBk = sky.SkyboxBk,
+		SkyboxDn = sky.SkyboxDn,
+		SkyboxFt = sky.SkyboxFt,
+		SkyboxLf = sky.SkyboxLf,
+		SkyboxRt = sky.SkyboxRt,
+		SkyboxUp = sky.SkyboxUp,
+		StarCount = sky.StarCount,
+		CelestialBodiesShown = sky.CelestialBodiesShown,
+		SunAngularSize = sky.SunAngularSize,
+		MoonAngularSize = sky.MoonAngularSize,
+	}
+end
+
+local function applyDaySkyTo(sky)
+	saveSkyState(sky)
+
+	for property, value in pairs(DAY_SKY_TEXTURES) do
+		sky[property] = value
+	end
+
+	sky.StarCount = 0
+	sky.CelestialBodiesShown = true
+	sky.SunAngularSize = 21
+end
+
+local function applyDaySky()
+	if not Config.DaySkyEnabled then
+		return
+	end
+
+	local foundSky = false
+
+	for _, object in ipairs(Lighting:GetDescendants()) do
+		if object:IsA("Sky") then
+			foundSky = true
+			applyDaySkyTo(object)
+		end
+	end
+
+	if not foundSky then
+		if not createdDaySky or not createdDaySky.Parent then
+			createdDaySky = Instance.new("Sky")
+			createdDaySky.Name = "MainWorldDaySky"
+			createdDaySky.Parent = Lighting
+		end
+
+		applyDaySkyTo(createdDaySky)
+	end
+end
+
+local function restoreDaySky()
+	if createdDaySky then
+		originalSkyStates[createdDaySky] = nil
+
+		if createdDaySky.Parent then
+			createdDaySky:Destroy()
+		end
+
+		createdDaySky = nil
+	end
+
+	for sky, state in pairs(originalSkyStates) do
+		if sky and sky.Parent then
+			pcall(function()
+				sky.SkyboxBk = state.SkyboxBk
+				sky.SkyboxDn = state.SkyboxDn
+				sky.SkyboxFt = state.SkyboxFt
+				sky.SkyboxLf = state.SkyboxLf
+				sky.SkyboxRt = state.SkyboxRt
+				sky.SkyboxUp = state.SkyboxUp
+				sky.StarCount = state.StarCount
+				sky.CelestialBodiesShown = state.CelestialBodiesShown
+				sky.SunAngularSize = state.SunAngularSize
+				sky.MoonAngularSize = state.MoonAngularSize
+			end)
+		end
+	end
+
+	table.clear(originalSkyStates)
 end
 
 local function applyRemoveFog()
@@ -1036,14 +1139,55 @@ local function restoreReflections()
 	table.clear(originalReflectanceValues)
 end
 
+local function applyRemoveClouds()
+	if not Config.RemoveCloudsEnabled then
+		return
+	end
+
+	local terrain = Workspace:FindFirstChildOfClass("Terrain")
+	if not terrain then
+		return
+	end
+
+	for _, object in ipairs(terrain:GetDescendants()) do
+		if object:IsA("Clouds") then
+			if originalCloudParents[object] == nil then
+				originalCloudParents[object] = object.Parent
+			end
+
+			object.Parent = nil
+		end
+	end
+end
+
+local function restoreClouds()
+	local terrain = Workspace:FindFirstChildOfClass("Terrain")
+
+	for clouds, parent in pairs(originalCloudParents) do
+		if clouds then
+			pcall(function()
+				if parent and parent.Parent then
+					clouds.Parent = parent
+				elseif terrain then
+					clouds.Parent = terrain
+				end
+			end)
+		end
+	end
+
+	table.clear(originalCloudParents)
+end
+
 local function applyEnabledEffects()
 	applyDayMode()
+	applyDaySky()
 	applyRemoveFog()
 	applyRemoveBlur()
 	applyRemoveAtmosphere()
 	applyRemoveDecals()
 	applyRemoveShadows()
 	applyRemoveReflections()
+	applyRemoveClouds()
 end
 
 local function stopEffectLoop()
@@ -1082,6 +1226,18 @@ local function setDayModeEnabled(enabled)
 	elseif originalDayClockTime ~= nil then
 		Lighting.ClockTime = originalDayClockTime
 		originalDayClockTime = nil
+	end
+
+	refreshEffectLoop()
+end
+
+local function setDaySkyEnabled(enabled)
+	Config.DaySkyEnabled = enabled
+
+	if enabled then
+		applyDaySky()
+	else
+		restoreDaySky()
 	end
 
 	refreshEffectLoop()
@@ -1166,28 +1322,44 @@ local function setRemoveReflectionsEnabled(enabled)
 	refreshEffectLoop()
 end
 
+local function setRemoveCloudsEnabled(enabled)
+	Config.RemoveCloudsEnabled = enabled
+
+	if enabled then
+		applyRemoveClouds()
+	else
+		restoreClouds()
+	end
+
+	refreshEffectLoop()
+end
+
 local function stopAllEffects(restoreValues)
 	stopEffectLoop()
 
 	Config.DayModeEnabled = false
+	Config.DaySkyEnabled = false
 	Config.RemoveFogEnabled = false
 	Config.RemoveBlurEnabled = false
 	Config.RemoveAtmosphereEnabled = false
 	Config.RemoveDecalsEnabled = false
 	Config.RemoveShadowsEnabled = false
 	Config.RemoveReflectionsEnabled = false
+	Config.RemoveCloudsEnabled = false
 
 	if restoreValues then
 		if originalDayClockTime ~= nil then
 			Lighting.ClockTime = originalDayClockTime
 		end
 
+		restoreDaySky()
 		restoreFog()
 		restoreBlur()
 		restoreAtmosphere()
 		restoreDecals()
 		restoreShadows()
 		restoreReflections()
+		restoreClouds()
 	end
 
 	originalDayClockTime = nil
@@ -2873,40 +3045,52 @@ UI.dayModeButton = createPageButton(
 	2
 )
 
+UI.daySkyButton = createPageButton(
+	effectContent,
+	"Day Sky: OFF",
+	3
+)
+
 UI.removeFogButton = createPageButton(
 	effectContent,
 	"Remove Fog: OFF",
-	3
+	4
 )
 
 UI.removeBlurButton = createPageButton(
 	effectContent,
 	"Remove Blur: OFF",
-	4
+	5
 )
 
 UI.removeAtmosphereButton = createPageButton(
 	effectContent,
 	"Remove Atmosphere: OFF",
-	5
+	6
 )
 
 UI.removeDecalsButton = createPageButton(
 	effectContent,
 	"Remove Decals: OFF",
-	6
+	7
 )
 
 UI.removeShadowsButton = createPageButton(
 	effectContent,
 	"Remove Shadows: OFF",
-	7
+	8
 )
 
 UI.removeReflectionsButton = createPageButton(
 	effectContent,
 	"Remove Reflections: OFF",
-	8
+	9
+)
+
+UI.removeCloudsButton = createPageButton(
+	effectContent,
+	"Remove Clouds: OFF",
+	10
 )
 
 UI.effectInfoLabel = Instance.new("TextLabel")
@@ -2916,13 +3100,14 @@ UI.effectInfoLabel.Text =
 	"Effect ที่เปิดไว้จะถูกบังคับซ้ำทุก "
 	.. tostring(Config.EffectRefreshInterval)
 	.. " วินาที\n"
-	.. "Day Mode = เวลา 14:00 | ปิดแล้วคืนค่าเดิม"
+	.. "Day Mode = เวลา 14:00 | Day Sky = ท้องฟ้ากลางวัน\n"
+	.. "ปิดแล้วคืนค่าเดิม"
 UI.effectInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
 UI.effectInfoLabel.TextSize = 13
 UI.effectInfoLabel.Font = Enum.Font.Gotham
 UI.effectInfoLabel.TextWrapped = true
 UI.effectInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.effectInfoLabel.LayoutOrder = 9
+UI.effectInfoLabel.LayoutOrder = 11
 UI.effectInfoLabel.Parent = effectContent
 
 local function updateEffectInterface()
@@ -2934,6 +3119,12 @@ local function updateEffectInterface()
 		UI.dayModeButton,
 		"Day Mode",
 		Config.DayModeEnabled
+	)
+
+	setButtonState(
+		UI.daySkyButton,
+		"Day Sky",
+		Config.DaySkyEnabled
 	)
 
 	setButtonState(
@@ -2971,10 +3162,21 @@ local function updateEffectInterface()
 		"Remove Reflections",
 		Config.RemoveReflectionsEnabled
 	)
+
+	setButtonState(
+		UI.removeCloudsButton,
+		"Remove Clouds",
+		Config.RemoveCloudsEnabled
+	)
 end
 
 addConnection(UI.dayModeButton.MouseButton1Click:Connect(function()
 	setDayModeEnabled(not Config.DayModeEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.daySkyButton.MouseButton1Click:Connect(function()
+	setDaySkyEnabled(not Config.DaySkyEnabled)
 	updateEffectInterface()
 end))
 
@@ -3005,6 +3207,11 @@ end))
 
 addConnection(UI.removeReflectionsButton.MouseButton1Click:Connect(function()
 	setRemoveReflectionsEnabled(not Config.RemoveReflectionsEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.removeCloudsButton.MouseButton1Click:Connect(function()
+	setRemoveCloudsEnabled(not Config.RemoveCloudsEnabled)
 	updateEffectInterface()
 end))
 
