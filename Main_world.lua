@@ -68,6 +68,8 @@ local Config = {
 	-- Effect
 	DayModeEnabled = false,
 	DaySkyEnabled = false,
+	BrightnessEnabled = false,
+	BrightnessValue = 2,
 	RemoveFogEnabled = false,
 	RemoveBlurEnabled = false,
 	RemoveAtmosphereEnabled = false,
@@ -114,6 +116,7 @@ local visibleEPrompts = {}
 
 local effectThread = nil
 local originalDayClockTime = nil
+local originalBrightness = nil
 local originalSkyStates = {}
 local createdDaySky = nil
 local originalFogSettings = nil
@@ -834,6 +837,7 @@ end
 local function anyEffectEnabled()
 	return Config.DayModeEnabled
 		or Config.DaySkyEnabled
+		or Config.BrightnessEnabled
 		or Config.RemoveFogEnabled
 		or Config.RemoveBlurEnabled
 		or Config.RemoveAtmosphereEnabled
@@ -849,6 +853,21 @@ local function applyDayMode()
 	end
 
 	Lighting.ClockTime = Config.DayClockTime
+end
+
+local function applyBrightness()
+	if not Config.BrightnessEnabled then
+		return
+	end
+
+	Lighting.Brightness = Config.BrightnessValue
+end
+
+local function restoreBrightness()
+	if originalBrightness ~= nil then
+		Lighting.Brightness = originalBrightness
+		originalBrightness = nil
+	end
 end
 
 local DAY_SKY_TEXTURES = {
@@ -1181,6 +1200,7 @@ end
 local function applyEnabledEffects()
 	applyDayMode()
 	applyDaySky()
+	applyBrightness()
 	applyRemoveFog()
 	applyRemoveBlur()
 	applyRemoveAtmosphere()
@@ -1238,6 +1258,22 @@ local function setDaySkyEnabled(enabled)
 		applyDaySky()
 	else
 		restoreDaySky()
+	end
+
+	refreshEffectLoop()
+end
+
+local function setBrightnessEnabled(enabled)
+	if enabled and not Config.BrightnessEnabled then
+		originalBrightness = Lighting.Brightness
+	end
+
+	Config.BrightnessEnabled = enabled
+
+	if enabled then
+		applyBrightness()
+	else
+		restoreBrightness()
 	end
 
 	refreshEffectLoop()
@@ -1339,6 +1375,7 @@ local function stopAllEffects(restoreValues)
 
 	Config.DayModeEnabled = false
 	Config.DaySkyEnabled = false
+	Config.BrightnessEnabled = false
 	Config.RemoveFogEnabled = false
 	Config.RemoveBlurEnabled = false
 	Config.RemoveAtmosphereEnabled = false
@@ -1353,6 +1390,7 @@ local function stopAllEffects(restoreValues)
 		end
 
 		restoreDaySky()
+		restoreBrightness()
 		restoreFog()
 		restoreBlur()
 		restoreAtmosphere()
@@ -1363,6 +1401,7 @@ local function stopAllEffects(restoreValues)
 	end
 
 	originalDayClockTime = nil
+	originalBrightness = nil
 end
 
 --==================================================
@@ -3051,48 +3090,48 @@ UI.daySkyButton = createPageButton(
 	3
 )
 
+UI.brightnessButton = createPageButton(
+	effectContent,
+	"Brightness = 2: OFF",
+	4
+)
+
 UI.removeFogButton = createPageButton(
 	effectContent,
 	"Remove Fog: OFF",
-	4
+	5
 )
 
 UI.removeBlurButton = createPageButton(
 	effectContent,
 	"Remove Blur: OFF",
-	5
+	6
 )
-
 UI.removeAtmosphereButton = createPageButton(
 	effectContent,
 	"Remove Atmosphere: OFF",
-	6
+	7
 )
-
 UI.removeDecalsButton = createPageButton(
 	effectContent,
 	"Remove Decals: OFF",
-	7
+	8
 )
-
 UI.removeShadowsButton = createPageButton(
 	effectContent,
 	"Remove Shadows: OFF",
-	8
+	9
 )
-
 UI.removeReflectionsButton = createPageButton(
 	effectContent,
 	"Remove Reflections: OFF",
-	9
+	10
 )
-
 UI.removeCloudsButton = createPageButton(
 	effectContent,
 	"Remove Clouds: OFF",
-	10
+	11
 )
-
 UI.effectInfoLabel = Instance.new("TextLabel")
 UI.effectInfoLabel.Size = UDim2.new(1, 0, 0, 82)
 UI.effectInfoLabel.BackgroundTransparency = 1
@@ -3101,13 +3140,13 @@ UI.effectInfoLabel.Text =
 	.. tostring(Config.EffectRefreshInterval)
 	.. " วินาที\n"
 	.. "Day Mode = เวลา 14:00 | Day Sky = ท้องฟ้ากลางวัน\n"
-	.. "ปิดแล้วคืนค่าเดิม"
+	.. "Brightness = 2 | ปิดแล้วคืนค่าเดิม"
 UI.effectInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
 UI.effectInfoLabel.TextSize = 13
 UI.effectInfoLabel.Font = Enum.Font.Gotham
 UI.effectInfoLabel.TextWrapped = true
 UI.effectInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.effectInfoLabel.LayoutOrder = 11
+UI.effectInfoLabel.LayoutOrder = 12
 UI.effectInfoLabel.Parent = effectContent
 
 local function updateEffectInterface()
@@ -3125,6 +3164,12 @@ local function updateEffectInterface()
 		UI.daySkyButton,
 		"Day Sky",
 		Config.DaySkyEnabled
+	)
+
+	setButtonState(
+		UI.brightnessButton,
+		"Brightness = 2",
+		Config.BrightnessEnabled
 	)
 
 	setButtonState(
@@ -3177,6 +3222,11 @@ end))
 
 addConnection(UI.daySkyButton.MouseButton1Click:Connect(function()
 	setDaySkyEnabled(not Config.DaySkyEnabled)
+	updateEffectInterface()
+end))
+
+addConnection(UI.brightnessButton.MouseButton1Click:Connect(function()
+	setBrightnessEnabled(not Config.BrightnessEnabled)
 	updateEffectInterface()
 end))
 
