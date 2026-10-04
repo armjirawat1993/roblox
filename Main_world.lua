@@ -972,7 +972,7 @@ local function applyRemoveFog()
 	end
 
 	Lighting.FogStart = 0
-	Lighting.FogEnd = 100000
+	Lighting.FogEnd = 1000000000
 end
 
 local function restoreFog()
