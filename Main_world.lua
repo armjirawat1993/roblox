@@ -10,6 +10,7 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
 local GuiService = game:GetService("GuiService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -58,12 +59,13 @@ local Config = {
 	MinAutoClickInterval = 0.01,
 	MaxAutoClickInterval = 1.00,
 
-	AutoClickKey = Enum.KeyCode.G,
+	AutoClickKey = Enum.KeyCode.J,
 
 	-- Auto E
 	AutoEEnabled = false,
 	AutoEInterval = 0.01,
 	AutoEHoldTime = 0.01,
+	AutoEKey = Enum.KeyCode.K,
 
 	-- Effect
 	DayModeEnabled = false,
@@ -683,7 +685,36 @@ local function performAutoClick()
 		return
 	end
 
-	tool:Activate()
+	local camera = Workspace.CurrentCamera
+
+	if not camera then
+		return
+	end
+
+	local viewportSize = camera.ViewportSize
+	local centerX = math.floor(viewportSize.X / 2)
+	local centerY = math.floor(viewportSize.Y / 2)
+
+	pcall(function()
+		-- คลิก Mouse1 ตรงกลางหน้าจอ ไม่อิงตำแหน่งเมาส์จริง
+		VirtualInputManager:SendMouseButtonEvent(
+			centerX,
+			centerY,
+			0,
+			true,
+			game,
+			0
+		)
+
+		VirtualInputManager:SendMouseButtonEvent(
+			centerX,
+			centerY,
+			0,
+			false,
+			game,
+			0
+		)
+	end)
 end
 
 local function stopAutoClick()
@@ -1431,8 +1462,7 @@ end
 local function applyPlayerHighlight(targetPlayer)
 	if scriptClosed
 		or not Config.PlayerESPEnabled
-		or not targetPlayer
-		or targetPlayer == player then
+		or not targetPlayer then
 
 		return
 	end
@@ -1473,9 +1503,7 @@ local function refreshPlayerESP()
 	end
 
 	for _, targetPlayer in ipairs(Players:GetPlayers()) do
-		if targetPlayer ~= player then
-			applyPlayerHighlight(targetPlayer)
-		end
+		applyPlayerHighlight(targetPlayer)
 	end
 end
 
@@ -1487,7 +1515,7 @@ local function clearPlayerESP()
 end
 
 local function setupPlayerESPCharacterWatcher(targetPlayer)
-	if not targetPlayer or targetPlayer == player then
+	if not targetPlayer then
 		return
 	end
 
@@ -2885,8 +2913,8 @@ UI.autoClickInfoLabel = Instance.new("TextLabel")
 UI.autoClickInfoLabel.Size = UDim2.new(1, 0, 0, 90)
 UI.autoClickInfoLabel.BackgroundTransparency = 1
 UI.autoClickInfoLabel.Text =
-	"กด G เพื่อเปิดหรือปิด Auto Click\n"
-	.. "ทำงานเฉพาะตอนถือ Tool\n"
+	"กด Alt + J เพื่อเปิดหรือปิด Auto Click\n"
+	.. "คลิก Mouse1 ตรงกลางหน้าจอเมื่อถือ Tool\n"
 	.. "0.01 = คลิกเร็วที่สุด"
 UI.autoClickInfoLabel.TextColor3 =
 	Color3.fromRGB(165, 165, 175)
@@ -3036,7 +3064,7 @@ do
 	autoEInfoLabel.BackgroundTransparency = 1
 	autoEInfoLabel.Text =
 		"Auto E กด ProximityPrompt ปุ่ม E อัตโนมัติ\n"
-		.. "กด H เพื่อเปิด/ปิด | Interval: "
+		.. "กด Alt + K เพื่อเปิด/ปิด | Interval: "
 		.. string.format("%.2f", Config.AutoEInterval)
 	autoEInfoLabel.TextColor3 =
 		Color3.fromRGB(165, 165, 175)
@@ -3290,7 +3318,7 @@ UI.playerESPInfoLabel = Instance.new("TextLabel")
 UI.playerESPInfoLabel.Size = UDim2.new(1, 0, 0, 70)
 UI.playerESPInfoLabel.BackgroundTransparency = 1
 UI.playerESPInfoLabel.Text =
-	"Highlight ผู้เล่นทุกคน ยกเว้นตัวเรา\n"
+	"Highlight ผู้เล่นทุกคน รวมตัวเรา\n"
 	.. "AlwaysOnTop = มองเห็น Highlight ผ่านสิ่งกีดขวาง"
 UI.playerESPInfoLabel.TextColor3 = Color3.fromRGB(165, 165, 175)
 UI.playerESPInfoLabel.TextSize = 13
@@ -3741,16 +3769,26 @@ addConnection(UserInputService.InputBegan:Connect(function(
 		return
 	end
 
-	if input.KeyCode == Config.AutoClickKey then
+	local altDown =
+		UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)
+		or UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)
+
+	-- Alt + J เพื่อเปิด/ปิด Auto Click
+	if altDown
+		and input.KeyCode == Config.AutoClickKey then
+
 		toggleAutoClick()
 		updateAutoClickInterface()
 		return
 	end
 
-	-- กด H เพื่อเปิด/ปิด Auto E
-	if input.KeyCode == Enum.KeyCode.H then
+	-- Alt + K เพื่อเปิด/ปิด Auto E
+	if altDown
+		and input.KeyCode == Config.AutoEKey then
+
 		Addons.setAutoEEnabled(not Config.AutoEEnabled)
 		Addons.updateAutoEInterface()
+		return
 	end
 end))
 
