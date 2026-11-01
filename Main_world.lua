@@ -84,6 +84,12 @@ local Config = {
 
 	-- ESP
 	PlayerESPEnabled = false,
+	PlayerESPColor = Color3.fromRGB(55, 135, 220),
+
+	-- Crosshair
+	CrosshairEnabled = false,
+	CrosshairColor = Color3.fromRGB(255, 255, 255),
+	CrosshairSize = 6,
 
 }
 
@@ -1488,7 +1494,7 @@ local function applyPlayerHighlight(targetPlayer)
 
 	highlight.Adornee = character
 	highlight.Enabled = true
-	highlight.FillColor = Color3.fromRGB(55, 135, 220)
+	highlight.FillColor = Config.PlayerESPColor
 	highlight.FillTransparency = 0.75
 	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
 	highlight.OutlineTransparency = 0
@@ -1874,6 +1880,9 @@ local effectTab, effectContent =
 
 local espTab, espContent =
 	createTab("ESP", 6)
+
+local crosshairTab, crosshairContent =
+	createTab("Crosshair", 7)
 
 
 local function showTab(tabName)
@@ -3314,6 +3323,105 @@ UI.playerESPButton = createPageButton(
 	2
 )
 
+UI.playerESPColorLabel = Instance.new("TextLabel")
+UI.playerESPColorLabel.Size = UDim2.new(1, 0, 0, 28)
+UI.playerESPColorLabel.BackgroundTransparency = 1
+UI.playerESPColorLabel.Text = "ESP Color"
+UI.playerESPColorLabel.TextColor3 = Color3.fromRGB(230, 230, 235)
+UI.playerESPColorLabel.TextSize = 14
+UI.playerESPColorLabel.Font = Enum.Font.GothamMedium
+UI.playerESPColorLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.playerESPColorLabel.LayoutOrder = 3
+UI.playerESPColorLabel.Parent = espContent
+
+UI.playerESPColorGrid = Instance.new("Frame")
+UI.playerESPColorGrid.Name = "PlayerESPColorGrid"
+UI.playerESPColorGrid.Size = UDim2.new(1, 0, 0, 96)
+UI.playerESPColorGrid.BackgroundTransparency = 1
+UI.playerESPColorGrid.LayoutOrder = 4
+UI.playerESPColorGrid.Parent = espContent
+
+UI.playerESPColorGridLayout = Instance.new("UIGridLayout")
+UI.playerESPColorGridLayout.CellSize = UDim2.new(0.25, -7, 0, 40)
+UI.playerESPColorGridLayout.CellPadding = UDim2.fromOffset(8, 8)
+UI.playerESPColorGridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UI.playerESPColorGridLayout.Parent = UI.playerESPColorGrid
+
+local ESP_COLORS = {
+	{ Name = "White", Color = Color3.fromRGB(255, 255, 255) },
+	{ Name = "Red", Color = Color3.fromRGB(255, 70, 70) },
+	{ Name = "Green", Color = Color3.fromRGB(70, 255, 120) },
+	{ Name = "Blue", Color = Color3.fromRGB(70, 150, 255) },
+	{ Name = "Yellow", Color = Color3.fromRGB(255, 225, 70) },
+	{ Name = "Cyan", Color = Color3.fromRGB(70, 245, 255) },
+	{ Name = "Purple", Color = Color3.fromRGB(190, 100, 255) },
+	{ Name = "Orange", Color = Color3.fromRGB(255, 145, 55) },
+}
+
+local playerESPColorButtons = {}
+
+local function sameESPColor(a, b)
+	return math.abs(a.R - b.R) < 0.001
+		and math.abs(a.G - b.G) < 0.001
+		and math.abs(a.B - b.B) < 0.001
+end
+
+local function updatePlayerESPColorButtons()
+	for _, data in pairs(playerESPColorButtons) do
+		local selected = sameESPColor(Config.PlayerESPColor, data.Color)
+		data.Stroke.Thickness = selected and 3 or 1
+		data.Stroke.Color = selected
+			and Color3.fromRGB(255, 255, 255)
+			or Color3.fromRGB(85, 85, 98)
+	end
+end
+
+local function setPlayerESPColor(color)
+	if typeof(color) ~= "Color3" then
+		return
+	end
+
+	Config.PlayerESPColor = color
+
+	if Config.PlayerESPEnabled then
+		refreshPlayerESP()
+	end
+
+	updatePlayerESPColorButtons()
+end
+
+for index, data in ipairs(ESP_COLORS) do
+	local button = Instance.new("TextButton")
+	button.Name = "ESPColor_" .. data.Name
+	button.BackgroundColor3 = data.Color
+	button.BorderSizePixel = 0
+	button.Text = data.Name
+	button.TextSize = 11
+	button.Font = Enum.Font.GothamBold
+	button.TextColor3 = Color3.fromRGB(20, 20, 25)
+	button.LayoutOrder = index
+	button.Parent = UI.playerESPColorGrid
+
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 7)
+	buttonCorner.Parent = button
+
+	local buttonStroke = Instance.new("UIStroke")
+	buttonStroke.Thickness = 1
+	buttonStroke.Color = Color3.fromRGB(85, 85, 98)
+	buttonStroke.Parent = button
+
+	playerESPColorButtons[data.Name] = {
+		Button = button,
+		Stroke = buttonStroke,
+		Color = data.Color,
+	}
+
+	addConnection(button.MouseButton1Click:Connect(function()
+		setPlayerESPColor(data.Color)
+	end))
+end
+
 UI.playerESPInfoLabel = Instance.new("TextLabel")
 UI.playerESPInfoLabel.Size = UDim2.new(1, 0, 0, 70)
 UI.playerESPInfoLabel.BackgroundTransparency = 1
@@ -3325,7 +3433,7 @@ UI.playerESPInfoLabel.TextSize = 13
 UI.playerESPInfoLabel.Font = Enum.Font.Gotham
 UI.playerESPInfoLabel.TextWrapped = true
 UI.playerESPInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.playerESPInfoLabel.LayoutOrder = 3
+UI.playerESPInfoLabel.LayoutOrder = 5
 UI.playerESPInfoLabel.Parent = espContent
 
 local function updateESPInterface()
@@ -3338,12 +3446,195 @@ local function updateESPInterface()
 		"Player ESP",
 		Config.PlayerESPEnabled
 	)
+
+	updatePlayerESPColorButtons()
 end
 
 addConnection(UI.playerESPButton.MouseButton1Click:Connect(function()
 	setPlayerESPEnabled(not Config.PlayerESPEnabled)
 	updateESPInterface()
 end))
+
+updatePlayerESPColorButtons()
+
+--==================================================
+-- [24.9] CROSSHAIR TAB GUI
+--==================================================
+
+-- Dot กลางหน้าจอ
+UI.crosshairDot = Instance.new("Frame")
+UI.crosshairDot.Name = "MainWorldCrosshairDot"
+UI.crosshairDot.Size = UDim2.fromOffset(
+	Config.CrosshairSize,
+	Config.CrosshairSize
+)
+UI.crosshairDot.AnchorPoint = Vector2.new(0.5, 0.5)
+UI.crosshairDot.Position = UDim2.fromScale(0.5, 0.5)
+UI.crosshairDot.BackgroundColor3 = Config.CrosshairColor
+UI.crosshairDot.BorderSizePixel = 0
+UI.crosshairDot.Visible = Config.CrosshairEnabled
+UI.crosshairDot.Active = false
+UI.crosshairDot.ZIndex = 2000000
+UI.crosshairDot.Parent = UI.screenGui
+
+UI.crosshairDotCorner = Instance.new("UICorner")
+UI.crosshairDotCorner.CornerRadius = UDim.new(1, 0)
+UI.crosshairDotCorner.Parent = UI.crosshairDot
+
+UI.crosshairTitle = Instance.new("TextLabel")
+UI.crosshairTitle.Size = UDim2.new(1, 0, 0, 35)
+UI.crosshairTitle.BackgroundTransparency = 1
+UI.crosshairTitle.Text = "Crosshair"
+UI.crosshairTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+UI.crosshairTitle.TextSize = 20
+UI.crosshairTitle.Font = Enum.Font.GothamBold
+UI.crosshairTitle.TextXAlignment = Enum.TextXAlignment.Left
+UI.crosshairTitle.LayoutOrder = 1
+UI.crosshairTitle.Parent = crosshairContent
+
+UI.crosshairButton = createPageButton(
+	crosshairContent,
+	"Crosshair: OFF",
+	2
+)
+
+UI.crosshairColorLabel = Instance.new("TextLabel")
+UI.crosshairColorLabel.Size = UDim2.new(1, 0, 0, 28)
+UI.crosshairColorLabel.BackgroundTransparency = 1
+UI.crosshairColorLabel.Text = "Dot Color"
+UI.crosshairColorLabel.TextColor3 = Color3.fromRGB(230, 230, 235)
+UI.crosshairColorLabel.TextSize = 14
+UI.crosshairColorLabel.Font = Enum.Font.GothamMedium
+UI.crosshairColorLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.crosshairColorLabel.LayoutOrder = 3
+UI.crosshairColorLabel.Parent = crosshairContent
+
+UI.crosshairColorGrid = Instance.new("Frame")
+UI.crosshairColorGrid.Name = "CrosshairColorGrid"
+UI.crosshairColorGrid.Size = UDim2.new(1, 0, 0, 96)
+UI.crosshairColorGrid.BackgroundTransparency = 1
+UI.crosshairColorGrid.LayoutOrder = 4
+UI.crosshairColorGrid.Parent = crosshairContent
+
+UI.crosshairColorGridLayout = Instance.new("UIGridLayout")
+UI.crosshairColorGridLayout.CellSize = UDim2.new(0.25, -7, 0, 40)
+UI.crosshairColorGridLayout.CellPadding = UDim2.fromOffset(8, 8)
+UI.crosshairColorGridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UI.crosshairColorGridLayout.Parent = UI.crosshairColorGrid
+
+local CROSSHAIR_COLORS = {
+	{ Name = "White", Color = Color3.fromRGB(255, 255, 255) },
+	{ Name = "Red", Color = Color3.fromRGB(255, 70, 70) },
+	{ Name = "Green", Color = Color3.fromRGB(70, 255, 120) },
+	{ Name = "Blue", Color = Color3.fromRGB(70, 150, 255) },
+	{ Name = "Yellow", Color = Color3.fromRGB(255, 225, 70) },
+	{ Name = "Cyan", Color = Color3.fromRGB(70, 245, 255) },
+	{ Name = "Purple", Color = Color3.fromRGB(190, 100, 255) },
+	{ Name = "Orange", Color = Color3.fromRGB(255, 145, 55) },
+}
+
+local crosshairColorButtons = {}
+
+local function sameColor(a, b)
+	return math.abs(a.R - b.R) < 0.001
+		and math.abs(a.G - b.G) < 0.001
+		and math.abs(a.B - b.B) < 0.001
+end
+
+local function updateCrosshairColorButtons()
+	for colorName, data in pairs(crosshairColorButtons) do
+		local selected = sameColor(
+			Config.CrosshairColor,
+			data.Color
+		)
+
+		data.Stroke.Thickness = selected and 3 or 1
+		data.Stroke.Color = selected
+			and Color3.fromRGB(255, 255, 255)
+			or Color3.fromRGB(85, 85, 98)
+	end
+end
+
+local function applyCrosshair()
+	if not UI.crosshairDot then
+		return
+	end
+
+	UI.crosshairDot.Size = UDim2.fromOffset(
+		Config.CrosshairSize,
+		Config.CrosshairSize
+	)
+	UI.crosshairDot.BackgroundColor3 = Config.CrosshairColor
+	UI.crosshairDot.Visible = Config.CrosshairEnabled
+end
+
+local function setCrosshairEnabled(enabled)
+	Config.CrosshairEnabled = enabled == true
+	applyCrosshair()
+end
+
+local function setCrosshairColor(color)
+	if typeof(color) ~= "Color3" then
+		return
+	end
+
+	Config.CrosshairColor = color
+	applyCrosshair()
+	updateCrosshairColorButtons()
+end
+
+local function updateCrosshairInterface()
+	if scriptClosed then
+		return
+	end
+
+	setButtonState(
+		UI.crosshairButton,
+		"Crosshair",
+		Config.CrosshairEnabled
+	)
+
+	updateCrosshairColorButtons()
+end
+
+for index, data in ipairs(CROSSHAIR_COLORS) do
+	local button = Instance.new("TextButton")
+	button.Name = "CrosshairColor_" .. data.Name
+	button.BackgroundColor3 = data.Color
+	button.BorderSizePixel = 0
+	button.Text = data.Name
+	button.TextSize = 11
+	button.Font = Enum.Font.GothamBold
+	button.TextColor3 = Color3.fromRGB(20, 20, 25)
+	button.LayoutOrder = index
+	button.Parent = UI.crosshairColorGrid
+
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 7)
+	buttonCorner.Parent = button
+
+	local buttonStroke = Instance.new("UIStroke")
+	buttonStroke.Thickness = 1
+	buttonStroke.Color = Color3.fromRGB(85, 85, 98)
+	buttonStroke.Parent = button
+
+	crosshairColorButtons[data.Name] = {
+		Button = button,
+		Stroke = buttonStroke,
+		Color = data.Color,
+	}
+
+	addConnection(button.MouseButton1Click:Connect(function()
+		setCrosshairColor(data.Color)
+	end))
+end
+
+addConnection(UI.crosshairButton.MouseButton1Click:Connect(function()
+	setCrosshairEnabled(not Config.CrosshairEnabled)
+	updateCrosshairInterface()
+end))
+
+updateCrosshairColorButtons()
 
 --==================================================
 -- [25] TAB EVENTS
@@ -3379,6 +3670,11 @@ addConnection(espTab.MouseButton1Click:Connect(function()
 	showTab("ESP")
 	refreshPlayerESP()
 	updateESPInterface()
+end))
+
+addConnection(crosshairTab.MouseButton1Click:Connect(function()
+	showTab("Crosshair")
+	updateCrosshairInterface()
 end))
 
 
@@ -3689,6 +3985,12 @@ local function closeScript()
 	stopAllEffects(true)
 
 	setPlayerESPEnabled(false)
+
+	Config.CrosshairEnabled = false
+	if UI.crosshairDot then
+		UI.crosshairDot.Visible = false
+	end
+
 	for targetPlayer, connection in pairs(playerESPCharacterConnections) do
 		if connection then
 			connection:Disconnect()
@@ -3863,5 +4165,6 @@ task.defer(function()
 
 	updateEffectInterface()
 	updateESPInterface()
+	updateCrosshairInterface()
 
 end)
