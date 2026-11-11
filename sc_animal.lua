@@ -1,3 +1,4 @@
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -5,6 +6,7 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local Lighting = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -14,10 +16,10 @@ local Config = {
     MinFlySpeed = 10,
     MaxFlySpeed = 200,
     ToggleKey = Enum.KeyCode.RightShift,
-    ESPColor = Color3.fromRGB(255, 90, 90),
+    ESPColor = Color3.fromRGB(70, 245, 255),
     AutoFarmClickInterval = 0.01,
     AutoFarmBehindDistance = 5, -- เพิ่มจาก 3 เป็น 5 studs
-    AutoFarmMode = "Fly", -- "TP" or "Fly"
+    AutoFarmMode = "Fly", -- fixed Fly mode
     AutoFarmEnabled = false,
     AutoFarmFlySpeed = 40,
     AutoFarmMinFlySpeed = 10,
@@ -32,10 +34,12 @@ local Config = {
     PlayerFlyEnabled = false,
     PlayerNoClipEnabled = false,
     AtkPlayerEnabled = false,
-    AtkPlayerSide = "Behind", -- "Front" or "Behind"
+    AtkPlayerSide = "Behind", -- fixed behind
     AtkPlayerDistance = 3,
     MinAtkPlayerDistance = 1,
     MaxAtkPlayerDistance = 6,
+    RemoveLightingEffects = false,
+    BrightLightingEnabled = false,
 }
 
 local State = {
@@ -62,6 +66,8 @@ local State = {
     AtkPlayerActiveTween = nil,
     DraggingAtkPlayerFlySlider = false,
     DraggingAtkPlayerDistanceSlider = false,
+    LightingEffectBackup = {},
+    LightingOriginal = nil,
 }
 
 local UI = {}
@@ -116,6 +122,93 @@ local guiParent = getGuiParent()
 destroyOldGui(playerGui)
 destroyOldGui(CoreGui)
 destroyOldGui(guiParent)
+
+local function isRemovableLightingEffect(object)
+    return object:IsA("PostEffect")
+        or object:IsA("Atmosphere")
+        or object:IsA("Sky")
+end
+
+local function backupAndRemoveLightingEffect(object)
+    if not object or object.Parent ~= Lighting or not isRemovableLightingEffect(object) then
+        return
+    end
+
+    local ok, clone = pcall(function()
+        return object:Clone()
+    end)
+
+    if ok and clone then
+        table.insert(State.LightingEffectBackup, clone)
+    end
+
+    pcall(function() object:Destroy() end)
+end
+
+local function setRemoveLightingEffects(enabled)
+    Config.RemoveLightingEffects = enabled and true or false
+
+    if Config.RemoveLightingEffects then
+        State.LightingEffectBackup = {}
+        for _, object in ipairs(Lighting:GetChildren()) do
+            backupAndRemoveLightingEffect(object)
+        end
+    else
+        for _, clone in ipairs(State.LightingEffectBackup) do
+            if clone then
+                local exists = false
+                for _, current in ipairs(Lighting:GetChildren()) do
+                    if current.ClassName == clone.ClassName and current.Name == clone.Name then
+                        exists = true
+                        break
+                    end
+                end
+                if not exists then
+                    pcall(function() clone.Parent = Lighting end)
+                else
+                    pcall(function() clone:Destroy() end)
+                end
+            end
+        end
+        State.LightingEffectBackup = {}
+    end
+
+    if UI.effectToggle then
+        UI.effectToggle.Text = Config.RemoveLightingEffects and "ON" or "OFF"
+        UI.effectToggle.BackgroundColor3 = Config.RemoveLightingEffects
+            and Color3.fromRGB(45, 170, 95)
+            or Color3.fromRGB(75, 75, 88)
+    end
+end
+
+local function setBrightLighting(enabled)
+    Config.BrightLightingEnabled = enabled and true or false
+
+    if Config.BrightLightingEnabled then
+        if not State.LightingOriginal then
+            State.LightingOriginal = {
+                Brightness = Lighting.Brightness,
+                Ambient = Lighting.Ambient,
+                OutdoorAmbient = Lighting.OutdoorAmbient,
+            }
+        end
+        Lighting.Brightness = 3
+        Lighting.Ambient = Color3.fromRGB(175, 175, 175)
+        Lighting.OutdoorAmbient = Color3.fromRGB(175, 175, 175)
+    elseif State.LightingOriginal then
+        Lighting.Brightness = State.LightingOriginal.Brightness
+        Lighting.Ambient = State.LightingOriginal.Ambient
+        Lighting.OutdoorAmbient = State.LightingOriginal.OutdoorAmbient
+        State.LightingOriginal = nil
+    end
+
+    if UI.brightnessToggle then
+        UI.brightnessToggle.Text = Config.BrightLightingEnabled and "ON" or "OFF"
+        UI.brightnessToggle.BackgroundColor3 = Config.BrightLightingEnabled
+            and Color3.fromRGB(45, 170, 95)
+            or Color3.fromRGB(75, 75, 88)
+    end
+end
 
 local NPC_ESP_NAME = "FeralTigerNPCESP"
 local npcESPHighlights = {}
@@ -579,7 +672,7 @@ local function startAtkPlayer()
             local targetRoot = targetPlayer and getPlayerRoot(targetPlayer)
 
             if root and targetRoot then
-                local z = Config.AtkPlayerSide == "Front" and -Config.AtkPlayerDistance or Config.AtkPlayerDistance
+                local z = Config.AtkPlayerDistance
                 local attach = targetRoot.CFrame * CFrame.new(0, 0, z)
                 local targetPos = targetRoot.Position
                 local delta = attach.Position - root.Position
@@ -896,37 +989,29 @@ local function startAutoFarm()
                     local behindCFrame = targetPart.CFrame * CFrame.new(0, 0, Config.AutoFarmBehindDistance)
                     local destination = CFrame.lookAt(behindCFrame.Position, targetPart.Position)
 
-                    if Config.AutoFarmMode == "TP" then
-                        cancelAutoFarmTween()
-                        root.CFrame = destination
-                        root.AssemblyLinearVelocity = Vector3.zero
-                        root.AssemblyAngularVelocity = Vector3.zero
-                        task.wait(Config.AutoFarmClickInterval)
-                    else
-                        local dt = RunService.Heartbeat:Wait()
-                        dt = math.clamp(dt, 1 / 240, 0.1)
+                    local dt = RunService.Heartbeat:Wait()
+                    dt = math.clamp(dt, 1 / 240, 0.1)
 
-                        if not targetPart.Parent then
-                            continue
-                        end
-
-                        behindCFrame = targetPart.CFrame * CFrame.new(0, 0, Config.AutoFarmBehindDistance)
-                        local delta = behindCFrame.Position - root.Position
-                        local distance = delta.Magnitude
-                        local step = math.max(Config.FlySpeed, 1) * dt
-
-                        cancelAutoFarmTween()
-                        local newPos
-                        if distance <= step or distance <= 0.001 then
-                            newPos = behindCFrame.Position
-                        else
-                            newPos = root.Position + delta.Unit * step
-                        end
-
-                        root.CFrame = CFrame.lookAt(newPos, targetPart.Position)
-                        root.AssemblyLinearVelocity = Vector3.zero
-                        root.AssemblyAngularVelocity = Vector3.zero
+                    if not targetPart.Parent then
+                        continue
                     end
+
+                    behindCFrame = targetPart.CFrame * CFrame.new(0, 0, Config.AutoFarmBehindDistance)
+                    local delta = behindCFrame.Position - root.Position
+                    local distance = delta.Magnitude
+                    local step = math.max(Config.FlySpeed, 1) * dt
+
+                    cancelAutoFarmTween()
+                    local newPos
+                    if distance <= step or distance <= 0.001 then
+                        newPos = behindCFrame.Position
+                    else
+                        newPos = root.Position + delta.Unit * step
+                    end
+
+                    root.CFrame = CFrame.lookAt(newPos, targetPart.Position)
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
                 else
                     task.wait(0.03)
                 end
@@ -976,18 +1061,6 @@ local function setAutoFarmEnabled(enabled)
             and Color3.fromRGB(45, 170, 95)
             or Color3.fromRGB(75, 75, 88)
     end
-end
-
-local function updateAutoFarmModeButtons()
-    if not UI.autoFarmTPButton or not UI.autoFarmFlyButton then return end
-
-    UI.autoFarmTPButton.BackgroundColor3 = Config.AutoFarmMode == "TP"
-        and Color3.fromRGB(220, 135, 40)
-        or Color3.fromRGB(65, 65, 78)
-
-    UI.autoFarmFlyButton.BackgroundColor3 = Config.AutoFarmMode == "Fly"
-        and Color3.fromRGB(220, 135, 40)
-        or Color3.fromRGB(65, 65, 78)
 end
 
 local function updateAutoFarmSliderVisual()
@@ -1196,6 +1269,77 @@ local atkPlayerTabCorner = Instance.new("UICorner")
 atkPlayerTabCorner.CornerRadius = UDim.new(0,8)
 atkPlayerTabCorner.Parent = UI.atkPlayerTab
 
+UI.effectTab = Instance.new("TextButton")
+UI.effectTab.Size = UDim2.new(1, -16, 0, 42)
+UI.effectTab.Position = UDim2.fromOffset(8, 212)
+UI.effectTab.BackgroundColor3 = Color3.fromRGB(65, 65, 78)
+UI.effectTab.BorderSizePixel = 0
+UI.effectTab.Text = "Effect"
+UI.effectTab.TextColor3 = Color3.new(1,1,1)
+UI.effectTab.TextSize = 14
+UI.effectTab.Font = Enum.Font.GothamBold
+UI.effectTab.Parent = UI.sidebar
+local effectTabCorner = Instance.new("UICorner")
+effectTabCorner.CornerRadius = UDim.new(0,8)
+effectTabCorner.Parent = UI.effectTab
+
+UI.effectContent = Instance.new("Frame")
+UI.effectContent.Size = UDim2.new(1, -125, 1, -54)
+UI.effectContent.Position = UDim2.fromOffset(125, 54)
+UI.effectContent.BackgroundTransparency = 1
+UI.effectContent.Visible = false
+UI.effectContent.Parent = UI.main
+
+UI.effectToggleLabel = Instance.new("TextLabel")
+UI.effectToggleLabel.Size = UDim2.new(1, -150, 0, 42)
+UI.effectToggleLabel.Position = UDim2.fromOffset(16, 20)
+UI.effectToggleLabel.BackgroundTransparency = 1
+UI.effectToggleLabel.Text = "Remove Lighting Effects"
+UI.effectToggleLabel.TextColor3 = Color3.new(1,1,1)
+UI.effectToggleLabel.TextSize = 14
+UI.effectToggleLabel.Font = Enum.Font.GothamBold
+UI.effectToggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.effectToggleLabel.Parent = UI.effectContent
+
+UI.effectToggle = Instance.new("TextButton")
+UI.effectToggle.Size = UDim2.fromOffset(100, 38)
+UI.effectToggle.Position = UDim2.new(1, -116, 0, 22)
+UI.effectToggle.BackgroundColor3 = Color3.fromRGB(75,75,88)
+UI.effectToggle.BorderSizePixel = 0
+UI.effectToggle.Text = "OFF"
+UI.effectToggle.TextColor3 = Color3.new(1,1,1)
+UI.effectToggle.TextSize = 14
+UI.effectToggle.Font = Enum.Font.GothamBold
+UI.effectToggle.Parent = UI.effectContent
+local effectToggleCorner = Instance.new("UICorner")
+effectToggleCorner.CornerRadius = UDim.new(0,8)
+effectToggleCorner.Parent = UI.effectToggle
+
+UI.brightnessToggleLabel = Instance.new("TextLabel")
+UI.brightnessToggleLabel.Size = UDim2.new(1, -150, 0, 42)
+UI.brightnessToggleLabel.Position = UDim2.fromOffset(16, 76)
+UI.brightnessToggleLabel.BackgroundTransparency = 1
+UI.brightnessToggleLabel.Text = "Bright Lighting"
+UI.brightnessToggleLabel.TextColor3 = Color3.new(1,1,1)
+UI.brightnessToggleLabel.TextSize = 14
+UI.brightnessToggleLabel.Font = Enum.Font.GothamBold
+UI.brightnessToggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.brightnessToggleLabel.Parent = UI.effectContent
+
+UI.brightnessToggle = Instance.new("TextButton")
+UI.brightnessToggle.Size = UDim2.fromOffset(100, 38)
+UI.brightnessToggle.Position = UDim2.new(1, -116, 0, 78)
+UI.brightnessToggle.BackgroundColor3 = Color3.fromRGB(75,75,88)
+UI.brightnessToggle.BorderSizePixel = 0
+UI.brightnessToggle.Text = "OFF"
+UI.brightnessToggle.TextColor3 = Color3.new(1,1,1)
+UI.brightnessToggle.TextSize = 14
+UI.brightnessToggle.Font = Enum.Font.GothamBold
+UI.brightnessToggle.Parent = UI.effectContent
+local brightnessToggleCorner = Instance.new("UICorner")
+brightnessToggleCorner.CornerRadius = UDim.new(0,8)
+brightnessToggleCorner.Parent = UI.brightnessToggle
+
 UI.autoAttackContent = Instance.new("Frame")
 UI.autoAttackContent.Size = UDim2.new(1, -125, 1, -54)
 UI.autoAttackContent.Position = UDim2.fromOffset(125, 54)
@@ -1321,78 +1465,6 @@ UI.espLayout.Padding = UDim.new(0, 10)
 UI.espLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UI.espLayout.Parent = UI.espContent
 
-UI.espColorLabel = Instance.new("TextLabel")
-UI.espColorLabel.Size = UDim2.new(1, -8, 0, 24)
-UI.espColorLabel.BackgroundTransparency = 1
-UI.espColorLabel.Text = "ESP Color"
-UI.espColorLabel.TextColor3 = Color3.fromRGB(225, 225, 230)
-UI.espColorLabel.TextSize = 14
-UI.espColorLabel.Font = Enum.Font.GothamBold
-UI.espColorLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.espColorLabel.LayoutOrder = 3
-UI.espColorLabel.Parent = UI.espContent
-
-UI.espColorGrid = Instance.new("Frame")
-UI.espColorGrid.Size = UDim2.new(1, -8, 0, 88)
-UI.espColorGrid.BackgroundTransparency = 1
-UI.espColorGrid.LayoutOrder = 4
-UI.espColorGrid.Parent = UI.espContent
-
-UI.espColorGridLayout = Instance.new("UIGridLayout")
-UI.espColorGridLayout.CellSize = UDim2.new(0.25, -7, 0, 38)
-UI.espColorGridLayout.CellPadding = UDim2.fromOffset(8, 8)
-UI.espColorGridLayout.Parent = UI.espColorGrid
-
-UI.espColorButtons = {}
-UI.espColors = {
-    {Name="Red", Color=Color3.fromRGB(255,90,90)},
-    {Name="Green", Color=Color3.fromRGB(90,255,130)},
-    {Name="Blue", Color=Color3.fromRGB(80,155,255)},
-    {Name="Yellow", Color=Color3.fromRGB(255,225,70)},
-    {Name="Cyan", Color=Color3.fromRGB(70,245,255)},
-    {Name="Purple", Color=Color3.fromRGB(190,100,255)},
-    {Name="Orange", Color=Color3.fromRGB(255,145,55)},
-    {Name="White", Color=Color3.fromRGB(255,255,255)},
-}
-
-local function updateESPColorButtons()
-    for _, data in pairs(UI.espColorButtons) do
-        data.Stroke.Thickness = sameColor(Config.ESPColor, data.Color) and 3 or 1
-        data.Stroke.Color = sameColor(Config.ESPColor, data.Color)
-            and Color3.fromRGB(255,255,255)
-            or Color3.fromRGB(90,90,100)
-    end
-end
-
-for index, data in ipairs(UI.espColors) do
-    local button = Instance.new("TextButton")
-    button.Name = "ESPColor_" .. data.Name
-    button.BackgroundColor3 = data.Color
-    button.BorderSizePixel = 0
-    button.Text = data.Name
-    button.TextColor3 = Color3.fromRGB(25,25,30)
-    button.TextSize = 11
-    button.Font = Enum.Font.GothamBold
-    button.LayoutOrder = index
-    button.Parent = UI.espColorGrid
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 7)
-    corner.Parent = button
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1
-    stroke.Color = Color3.fromRGB(90,90,100)
-    stroke.Parent = button
-
-    UI.espColorButtons[data.Name] = {Button=button, Stroke=stroke, Color=data.Color}
-    addConnection(button.Activated:Connect(function()
-        Config.ESPColor = data.Color
-        refreshNPCESP()
-        updateESPColorButtons()
-    end))
-end
-
 UI.espGroupLabel = Instance.new("TextLabel")
 UI.espGroupLabel.Size = UDim2.new(1, -8, 0, 26)
 UI.espGroupLabel.BackgroundTransparency = 1
@@ -1499,7 +1571,7 @@ UI.autoFarmLayout.Parent = UI.autoFarmContent
 UI.autoFarmToggleFrame = Instance.new("Frame")
 UI.autoFarmToggleFrame.Size = UDim2.new(1, -8, 0, 42)
 UI.autoFarmToggleFrame.BackgroundTransparency = 1
-UI.autoFarmToggleFrame.LayoutOrder = 5
+UI.autoFarmToggleFrame.LayoutOrder = 7
 UI.autoFarmToggleFrame.Parent = UI.espContent
 
 UI.autoFarmToggleLabel = Instance.new("TextLabel")
@@ -1527,45 +1599,10 @@ UI.autoFarmToggleCorner = Instance.new("UICorner")
 UI.autoFarmToggleCorner.CornerRadius = UDim.new(0, 8)
 UI.autoFarmToggleCorner.Parent = UI.autoFarmToggle
 
-UI.autoFarmModeFrame = Instance.new("Frame")
-UI.autoFarmModeFrame.Size = UDim2.new(1, -8, 0, 42)
-UI.autoFarmModeFrame.BackgroundTransparency = 1
-UI.autoFarmModeFrame.LayoutOrder = 6
-UI.autoFarmModeFrame.Parent = UI.espContent
-
-UI.autoFarmTPButton = Instance.new("TextButton")
-UI.autoFarmTPButton.Size = UDim2.new(0.5, -5, 1, 0)
-UI.autoFarmTPButton.BackgroundColor3 = Color3.fromRGB(220, 135, 40)
-UI.autoFarmTPButton.BorderSizePixel = 0
-UI.autoFarmTPButton.Text = "TP"
-UI.autoFarmTPButton.TextColor3 = Color3.new(1, 1, 1)
-UI.autoFarmTPButton.TextSize = 14
-UI.autoFarmTPButton.Font = Enum.Font.GothamBold
-UI.autoFarmTPButton.Parent = UI.autoFarmModeFrame
-
-UI.autoFarmTPCorner = Instance.new("UICorner")
-UI.autoFarmTPCorner.CornerRadius = UDim.new(0, 8)
-UI.autoFarmTPCorner.Parent = UI.autoFarmTPButton
-
-UI.autoFarmFlyButton = Instance.new("TextButton")
-UI.autoFarmFlyButton.Size = UDim2.new(0.5, -5, 1, 0)
-UI.autoFarmFlyButton.Position = UDim2.new(0.5, 10, 0, 0)
-UI.autoFarmFlyButton.BackgroundColor3 = Color3.fromRGB(65, 65, 78)
-UI.autoFarmFlyButton.BorderSizePixel = 0
-UI.autoFarmFlyButton.Text = "Fly"
-UI.autoFarmFlyButton.TextColor3 = Color3.new(1, 1, 1)
-UI.autoFarmFlyButton.TextSize = 14
-UI.autoFarmFlyButton.Font = Enum.Font.GothamBold
-UI.autoFarmFlyButton.Parent = UI.autoFarmModeFrame
-
-UI.autoFarmFlyCorner = Instance.new("UICorner")
-UI.autoFarmFlyCorner.CornerRadius = UDim.new(0, 8)
-UI.autoFarmFlyCorner.Parent = UI.autoFarmFlyButton
-
 UI.autoFarmSpeedGroup = Instance.new("Frame")
 UI.autoFarmSpeedGroup.Size = UDim2.new(1, -8, 0, 62)
 UI.autoFarmSpeedGroup.BackgroundTransparency = 1
-UI.autoFarmSpeedGroup.LayoutOrder = 7
+UI.autoFarmSpeedGroup.LayoutOrder = 8
 UI.autoFarmSpeedGroup.Parent = UI.espContent
 
 UI.autoFarmSpeedLabel = Instance.new("TextLabel")
@@ -1622,7 +1659,7 @@ UI.autoFarmGroupLabel.TextColor3 = Color3.fromRGB(225,225,230)
 UI.autoFarmGroupLabel.TextSize = 14
 UI.autoFarmGroupLabel.Font = Enum.Font.GothamBold
 UI.autoFarmGroupLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.autoFarmGroupLabel.LayoutOrder = 8
+UI.autoFarmGroupLabel.LayoutOrder = 9
 UI.autoFarmGroupLabel.Parent = UI.espContent
 
 UI.autoFarmGroupList = Instance.new("ScrollingFrame")
@@ -1635,7 +1672,7 @@ UI.autoFarmGroupList.ScrollBarImageColor3 = Color3.fromRGB(220, 135, 40)
 UI.autoFarmGroupList.AutomaticCanvasSize = Enum.AutomaticSize.Y
 UI.autoFarmGroupList.CanvasSize = UDim2.fromOffset(0, 0)
 UI.autoFarmGroupList.ScrollingDirection = Enum.ScrollingDirection.Y
-UI.autoFarmGroupList.LayoutOrder = 9
+UI.autoFarmGroupList.LayoutOrder = 10
 UI.autoFarmGroupList.Parent = UI.espContent
 
 local autoFarmGroupListCorner = Instance.new("UICorner")
@@ -1707,8 +1744,57 @@ local function refreshAutoFarmGroupList()
     end
 end
 
+UI.npcESPColorLabel = Instance.new("TextLabel")
+UI.npcESPColorLabel.Size = UDim2.new(1, -8, 0, 26)
+UI.npcESPColorLabel.BackgroundTransparency = 1
+UI.npcESPColorLabel.Text = "NPC ESP Color"
+UI.npcESPColorLabel.TextColor3 = Color3.fromRGB(225,225,230)
+UI.npcESPColorLabel.TextSize = 14
+UI.npcESPColorLabel.Font = Enum.Font.GothamBold
+UI.npcESPColorLabel.TextXAlignment = Enum.TextXAlignment.Left
+UI.npcESPColorLabel.LayoutOrder = 5
+UI.npcESPColorLabel.Parent = UI.espContent
+
+UI.npcESPColorFrame = Instance.new("Frame")
+UI.npcESPColorFrame.Size = UDim2.new(1, -8, 0, 40)
+UI.npcESPColorFrame.BackgroundTransparency = 1
+UI.npcESPColorFrame.LayoutOrder = 6
+UI.npcESPColorFrame.Parent = UI.espContent
+UI.npcESPColorButtons = {}
+
+local npcColorChoices = {
+    {"Cyan", Color3.fromRGB(70, 245, 255)},
+    {"Purple", Color3.fromRGB(180, 95, 255)},
+    {"Orange", Color3.fromRGB(255, 165, 70)},
+    {"White", Color3.fromRGB(255, 255, 255)},
+}
+
+for i, data in ipairs(npcColorChoices) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.fromOffset(34, 34)
+    b.Position = UDim2.fromOffset((i - 1) * 42, 3)
+    b.BackgroundColor3 = data[2]
+    b.BorderSizePixel = 0
+    b.Text = ""
+    b.Parent = UI.npcESPColorFrame
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(1,0)
+    c.Parent = b
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(255,255,255)
+    st.Thickness = data[2] == Config.ESPColor and 3 or 1
+    st.Parent = b
+    table.insert(UI.npcESPColorButtons, {Button=b, Color=data[2], Stroke=st})
+    addConnection(b.Activated:Connect(function()
+        Config.ESPColor = data[2]
+        for _, x in ipairs(UI.npcESPColorButtons) do
+            x.Stroke.Thickness = x.Color == Config.ESPColor and 3 or 1
+        end
+        refreshNPCESP()
+    end))
+end
+
 local updatePlayerFlySpeedVisuals
-local updateAtkPlayerSideButtons
 local refreshAtkPlayerList
 
 local function showPage(pageName)
@@ -1717,18 +1803,21 @@ local function showPage(pageName)
     local autoFarm = false
     local playerPage = pageName == "Player"
     local atkPlayer = pageName == "AtkPlayer"
+    local effectPage = pageName == "Effect"
 
     UI.autoAttackContent.Visible = autoAttack
     UI.espContent.Visible = esp
     UI.autoFarmContent.Visible = false
     UI.playerContent.Visible = playerPage
     UI.atkPlayerContent.Visible = atkPlayer
+    UI.effectContent.Visible = effectPage
 
     UI.autoAttackTab.BackgroundColor3 = autoAttack and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
     UI.espTab.BackgroundColor3 = esp and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
     UI.autoFarmTab.BackgroundColor3 = Color3.fromRGB(65,65,78)
     UI.playerTab.BackgroundColor3 = playerPage and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
     UI.atkPlayerTab.BackgroundColor3 = atkPlayer and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
+    UI.effectTab.BackgroundColor3 = effectPage and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
 
     if autoAttack then
         updateAutoAttackSliderVisual()
@@ -1736,8 +1825,6 @@ local function showPage(pageName)
     elseif esp then
         refreshAutoFarmGroupList()
         refreshNPCESP()
-        updateESPColorButtons()
-        updateAutoFarmModeButtons()
         updateAutoFarmSliderVisual()
         setAutoFarmEnabled(Config.AutoFarmEnabled)
     elseif playerPage then
@@ -1747,9 +1834,11 @@ local function showPage(pageName)
         updatePlayerFlySpeedVisuals()
     elseif atkPlayer then
         refreshAtkPlayerList()
-        updateAtkPlayerSideButtons()
         updatePlayerFlySpeedVisuals()
         setAtkPlayerEnabled(Config.AtkPlayerEnabled)
+    elseif effectPage then
+        setRemoveLightingEffects(Config.RemoveLightingEffects)
+        setBrightLighting(Config.BrightLightingEnabled)
     end
 end
 
@@ -1793,7 +1882,7 @@ local function makeRow(parent, title, order)
     return row, label
 end
 
-local espRow = makeRow(UI.playerContent, "ESP Player ทั้งหมด", 2)
+local espRow = makeRow(UI.playerContent, "ESP Player ทั้งหมด", 6)
 UI.playerESPToggle = Instance.new("TextButton")
 UI.playerESPToggle.Size = UDim2.fromOffset(100,38)
 UI.playerESPToggle.Position = UDim2.new(1,-100,0,2)
@@ -1806,7 +1895,7 @@ UI.playerESPToggle.TextSize = 14
 UI.playerESPToggle.Parent = espRow
 local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,8); c.Parent = UI.playerESPToggle
 
-local nameRow = makeRow(UI.playerContent, "ชื่อบนหัว Player", 3)
+local nameRow = makeRow(UI.playerContent, "ชื่อบนหัว Player", 7)
 UI.playerNameToggle = Instance.new("TextButton")
 UI.playerNameToggle.Size = UDim2.fromOffset(100,38)
 UI.playerNameToggle.Position = UDim2.new(1,-100,0,2)
@@ -1827,13 +1916,13 @@ UI.playerESPColorLabel.TextColor3 = Color3.fromRGB(225,225,230)
 UI.playerESPColorLabel.TextSize = 14
 UI.playerESPColorLabel.Font = Enum.Font.GothamBold
 UI.playerESPColorLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.playerESPColorLabel.LayoutOrder = 4
+UI.playerESPColorLabel.LayoutOrder = 8
 UI.playerESPColorLabel.Parent = UI.playerContent
 
 UI.playerESPColorFrame = Instance.new("Frame")
 UI.playerESPColorFrame.Size = UDim2.new(1,0,0,40)
 UI.playerESPColorFrame.BackgroundTransparency = 1
-UI.playerESPColorFrame.LayoutOrder = 5
+UI.playerESPColorFrame.LayoutOrder = 9
 UI.playerESPColorFrame.Parent = UI.playerContent
 UI.playerESPColorButtons = {}
 local playerColors = {
@@ -1865,7 +1954,7 @@ for i, data in ipairs(playerColors) do
     end))
 end
 
-local flyRow = makeRow(UI.playerContent, "Fly", 6)
+local flyRow = makeRow(UI.playerContent, "Fly", 1)
 UI.playerFlyToggle = Instance.new("TextButton")
 UI.playerFlyToggle.Size = UDim2.fromOffset(100,38)
 UI.playerFlyToggle.Position = UDim2.new(1,-100,0,2)
@@ -1878,7 +1967,7 @@ UI.playerFlyToggle.TextSize = 14
 UI.playerFlyToggle.Parent = flyRow
 local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0,8); fc.Parent = UI.playerFlyToggle
 
-local noClipRow = makeRow(UI.playerContent, "No Clip", 7)
+local noClipRow = makeRow(UI.playerContent, "No Clip", 2)
 UI.playerNoClipToggle = Instance.new("TextButton")
 UI.playerNoClipToggle.Size = UDim2.fromOffset(100,38)
 UI.playerNoClipToggle.Position = UDim2.new(1,-100,0,2)
@@ -1899,7 +1988,7 @@ UI.playerFlySpeedLabel.TextColor3 = Color3.fromRGB(225,225,230)
 UI.playerFlySpeedLabel.TextSize = 14
 UI.playerFlySpeedLabel.Font = Enum.Font.GothamMedium
 UI.playerFlySpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.playerFlySpeedLabel.LayoutOrder = 8
+UI.playerFlySpeedLabel.LayoutOrder = 3
 UI.playerFlySpeedLabel.Parent = UI.playerContent
 
 UI.playerFlySpeedSlider = Instance.new("Frame")
@@ -1907,7 +1996,7 @@ UI.playerFlySpeedSlider.Size = UDim2.new(1,0,0,12)
 UI.playerFlySpeedSlider.BackgroundColor3 = Color3.fromRGB(62,62,72)
 UI.playerFlySpeedSlider.BorderSizePixel = 0
 UI.playerFlySpeedSlider.Active = true
-UI.playerFlySpeedSlider.LayoutOrder = 9
+UI.playerFlySpeedSlider.LayoutOrder = 4
 UI.playerFlySpeedSlider.Parent = UI.playerContent
 local psc = Instance.new("UICorner"); psc.CornerRadius = UDim.new(1,0); psc.Parent = UI.playerFlySpeedSlider
 UI.playerFlySpeedFill = Instance.new("Frame")
@@ -1951,42 +2040,6 @@ UI.atkPlayerToggle.Font = Enum.Font.GothamBold
 UI.atkPlayerToggle.TextSize = 14
 UI.atkPlayerToggle.Parent = atkToggleRow
 local atc = Instance.new("UICorner"); atc.CornerRadius=UDim.new(0,8); atc.Parent=UI.atkPlayerToggle
-
-UI.atkPlayerSideLabel = Instance.new("TextLabel")
-UI.atkPlayerSideLabel.Size = UDim2.new(1,0,0,26)
-UI.atkPlayerSideLabel.BackgroundTransparency = 1
-UI.atkPlayerSideLabel.Text = "Attach Position"
-UI.atkPlayerSideLabel.TextColor3 = Color3.fromRGB(225,225,230)
-UI.atkPlayerSideLabel.TextSize = 14
-UI.atkPlayerSideLabel.Font = Enum.Font.GothamBold
-UI.atkPlayerSideLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.atkPlayerSideLabel.LayoutOrder = 3
-UI.atkPlayerSideLabel.Parent = UI.atkPlayerContent
-
-UI.atkPlayerSideFrame = Instance.new("Frame")
-UI.atkPlayerSideFrame.Size = UDim2.new(1,0,0,40)
-UI.atkPlayerSideFrame.BackgroundTransparency = 1
-UI.atkPlayerSideFrame.LayoutOrder = 4
-UI.atkPlayerSideFrame.Parent = UI.atkPlayerContent
-UI.atkPlayerFront = Instance.new("TextButton")
-UI.atkPlayerFront.Size = UDim2.new(0.5,-5,1,0)
-UI.atkPlayerFront.BackgroundColor3 = Color3.fromRGB(65,65,78)
-UI.atkPlayerFront.BorderSizePixel = 0
-UI.atkPlayerFront.Text = "Front"
-UI.atkPlayerFront.TextColor3 = Color3.new(1,1,1)
-UI.atkPlayerFront.Font = Enum.Font.GothamBold
-UI.atkPlayerFront.Parent = UI.atkPlayerSideFrame
-local afc=Instance.new("UICorner"); afc.CornerRadius=UDim.new(0,8); afc.Parent=UI.atkPlayerFront
-UI.atkPlayerBehind = Instance.new("TextButton")
-UI.atkPlayerBehind.Size = UDim2.new(0.5,-5,1,0)
-UI.atkPlayerBehind.Position = UDim2.new(0.5,10,0,0)
-UI.atkPlayerBehind.BackgroundColor3 = Color3.fromRGB(220,135,40)
-UI.atkPlayerBehind.BorderSizePixel = 0
-UI.atkPlayerBehind.Text = "Behind"
-UI.atkPlayerBehind.TextColor3 = Color3.new(1,1,1)
-UI.atkPlayerBehind.Font = Enum.Font.GothamBold
-UI.atkPlayerBehind.Parent = UI.atkPlayerSideFrame
-local abc=Instance.new("UICorner"); abc.CornerRadius=UDim.new(0,8); abc.Parent=UI.atkPlayerBehind
 
 UI.atkPlayerDistanceLabel = Instance.new("TextLabel")
 UI.atkPlayerDistanceLabel.Size = UDim2.new(1, -32, 0, 26)
@@ -2120,12 +2173,6 @@ local function setSharedFlySpeedFromSlider(slider, x)
     updatePlayerFlySpeedVisuals()
 end
 
-updateAtkPlayerSideButtons = function()
-    if not UI.atkPlayerFront then return end
-    UI.atkPlayerFront.BackgroundColor3 = Config.AtkPlayerSide == "Front" and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
-    UI.atkPlayerBehind.BackgroundColor3 = Config.AtkPlayerSide == "Behind" and Color3.fromRGB(220,135,40) or Color3.fromRGB(65,65,78)
-end
-
 refreshAtkPlayerList = function()
     for _, child in ipairs(UI.atkPlayerList:GetChildren()) do
         if child:IsA("TextButton") then child:Destroy() end
@@ -2202,6 +2249,28 @@ end))
 
 addConnection(UI.atkPlayerTab.Activated:Connect(function()
     showPage("AtkPlayer")
+end))
+
+addConnection(UI.effectTab.Activated:Connect(function()
+    showPage("Effect")
+end))
+
+addConnection(UI.effectToggle.Activated:Connect(function()
+    setRemoveLightingEffects(not Config.RemoveLightingEffects)
+end))
+
+addConnection(UI.brightnessToggle.Activated:Connect(function()
+    setBrightLighting(not Config.BrightLightingEnabled)
+end))
+
+addConnection(Lighting.ChildAdded:Connect(function(object)
+    if Config.RemoveLightingEffects and isRemovableLightingEffect(object) then
+        task.defer(function()
+            if Config.RemoveLightingEffects and object.Parent == Lighting then
+                backupAndRemoveLightingEffect(object)
+            end
+        end)
+    end
 end))
 
 addConnection(workspace.DescendantAdded:Connect(function(object)
@@ -2305,16 +2374,6 @@ addConnection(UI.atkPlayerToggle.Activated:Connect(function()
     setAtkPlayerEnabled(not Config.AtkPlayerEnabled)
 end))
 
-addConnection(UI.atkPlayerFront.Activated:Connect(function()
-    Config.AtkPlayerSide = "Front"
-    updateAtkPlayerSideButtons()
-end))
-
-addConnection(UI.atkPlayerBehind.Activated:Connect(function()
-    Config.AtkPlayerSide = "Behind"
-    updateAtkPlayerSideButtons()
-end))
-
 local function beginAtkPlayerDistanceSlider(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         State.DraggingAtkPlayerDistanceSlider = true
@@ -2352,18 +2411,6 @@ end
 
 addConnection(UI.autoAttackSpeedSlider.InputBegan:Connect(beginAutoAttackSlider))
 addConnection(UI.autoAttackSpeedKnob.InputBegan:Connect(beginAutoAttackSlider))
-
-addConnection(UI.autoFarmTPButton.Activated:Connect(function()
-    Config.AutoFarmMode = "TP"
-    cancelAutoFarmTween()
-    updateAutoFarmModeButtons()
-end))
-
-addConnection(UI.autoFarmFlyButton.Activated:Connect(function()
-    Config.AutoFarmMode = "Fly"
-    cancelAutoFarmTween()
-    updateAutoFarmModeButtons()
-end))
 
 local function beginAutoFarmSlider(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -2509,6 +2556,7 @@ local function closeScript()
     stopPlayerFly()
     State.stopPlayerNoClip()
     stopAtkPlayer()
+    if Config.BrightLightingEnabled then setBrightLighting(false) end
     table.clear(State.SelectedFarmGroups)
     table.clear(State.SelectedPlayers)
     clearNPCESP()
@@ -2537,9 +2585,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 task.defer(refreshNPCGroupList)
-task.defer(updateESPColorButtons)
 task.defer(refreshAutoFarmGroupList)
-task.defer(updateAutoFarmModeButtons)
 task.defer(updateAutoFarmSliderVisual)
 task.defer(function() setAutoFarmEnabled(Config.AutoFarmEnabled) end)
 task.defer(updateAutoAttackSliderVisual)
