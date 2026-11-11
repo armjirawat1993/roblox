@@ -64,7 +64,6 @@ local State = {
     PlayerNoClipOriginal = {},
     AtkPlayerWorker = nil,
     AtkPlayerActiveTween = nil,
-    DraggingAtkPlayerFlySlider = false,
     DraggingAtkPlayerDistanceSlider = false,
     LightingEffectBackup = {},
     LightingOriginal = nil,
@@ -1088,7 +1087,6 @@ local function setAutoFarmFlySpeedFromX(x)
     Config.AutoFarmFlySpeed = Config.FlySpeed
     updateAutoFarmSliderVisual()
     if UI.playerFlySpeedLabel then UI.playerFlySpeedLabel.Text = "Fly Speed (Shared): " .. tostring(Config.FlySpeed) end
-    if UI.atkPlayerFlySpeedLabel then UI.atkPlayerFlySpeedLabel.Text = "Fly Speed (Shared): " .. tostring(Config.FlySpeed) end
 end
 
 UI.screenGui = Instance.new("ScreenGui")
@@ -2076,41 +2074,6 @@ UI.atkPlayerDistanceKnob.Text = ""
 UI.atkPlayerDistanceKnob.Parent = UI.atkPlayerDistanceSlider
 local adskc=Instance.new("UICorner"); adskc.CornerRadius=UDim.new(1,0); adskc.Parent=UI.atkPlayerDistanceKnob
 
-UI.atkPlayerFlySpeedLabel = Instance.new("TextLabel")
-UI.atkPlayerFlySpeedLabel.Size = UDim2.new(1,0,0,26)
-UI.atkPlayerFlySpeedLabel.BackgroundTransparency = 1
-UI.atkPlayerFlySpeedLabel.Text = "Fly Speed (Shared): " .. tostring(Config.FlySpeed)
-UI.atkPlayerFlySpeedLabel.TextColor3 = Color3.fromRGB(225,225,230)
-UI.atkPlayerFlySpeedLabel.TextSize = 14
-UI.atkPlayerFlySpeedLabel.Font = Enum.Font.GothamMedium
-UI.atkPlayerFlySpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.atkPlayerFlySpeedLabel.LayoutOrder = 7
-UI.atkPlayerFlySpeedLabel.Parent = UI.atkPlayerContent
-
-UI.atkPlayerFlySpeedSlider = Instance.new("Frame")
-UI.atkPlayerFlySpeedSlider.Size = UDim2.new(1,0,0,12)
-UI.atkPlayerFlySpeedSlider.BackgroundColor3 = Color3.fromRGB(62,62,72)
-UI.atkPlayerFlySpeedSlider.BorderSizePixel = 0
-UI.atkPlayerFlySpeedSlider.Active = true
-UI.atkPlayerFlySpeedSlider.LayoutOrder = 8
-UI.atkPlayerFlySpeedSlider.Parent = UI.atkPlayerContent
-local asc=Instance.new("UICorner"); asc.CornerRadius=UDim.new(1,0); asc.Parent=UI.atkPlayerFlySpeedSlider
-UI.atkPlayerFlySpeedFill = Instance.new("Frame")
-UI.atkPlayerFlySpeedFill.Size = UDim2.fromScale(0,1)
-UI.atkPlayerFlySpeedFill.BackgroundColor3 = Color3.fromRGB(220,135,40)
-UI.atkPlayerFlySpeedFill.BorderSizePixel = 0
-UI.atkPlayerFlySpeedFill.Parent = UI.atkPlayerFlySpeedSlider
-local asfc=Instance.new("UICorner"); asfc.CornerRadius=UDim.new(1,0); asfc.Parent=UI.atkPlayerFlySpeedFill
-UI.atkPlayerFlySpeedKnob = Instance.new("TextButton")
-UI.atkPlayerFlySpeedKnob.Size = UDim2.fromOffset(22,22)
-UI.atkPlayerFlySpeedKnob.AnchorPoint = Vector2.new(0.5,0.5)
-UI.atkPlayerFlySpeedKnob.Position = UDim2.new(0,0,0.5,0)
-UI.atkPlayerFlySpeedKnob.BackgroundColor3 = Color3.fromRGB(255,242,220)
-UI.atkPlayerFlySpeedKnob.BorderSizePixel = 0
-UI.atkPlayerFlySpeedKnob.Text = ""
-UI.atkPlayerFlySpeedKnob.Parent = UI.atkPlayerFlySpeedSlider
-local askc=Instance.new("UICorner"); askc.CornerRadius=UDim.new(1,0); askc.Parent=UI.atkPlayerFlySpeedKnob
-
 UI.atkPlayerListLabel = Instance.new("TextLabel")
 UI.atkPlayerListLabel.Size = UDim2.new(1,0,0,26)
 UI.atkPlayerListLabel.BackgroundTransparency = 1
@@ -2119,8 +2082,25 @@ UI.atkPlayerListLabel.TextColor3 = Color3.fromRGB(225,225,230)
 UI.atkPlayerListLabel.TextSize = 14
 UI.atkPlayerListLabel.Font = Enum.Font.GothamBold
 UI.atkPlayerListLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.atkPlayerListLabel.LayoutOrder = 9
+UI.atkPlayerListLabel.LayoutOrder = 7
 UI.atkPlayerListLabel.Parent = UI.atkPlayerContent
+
+UI.atkPlayerSearch = Instance.new("TextBox")
+UI.atkPlayerSearch.Size = UDim2.new(1,0,0,38)
+UI.atkPlayerSearch.BackgroundColor3 = Color3.fromRGB(48,48,60)
+UI.atkPlayerSearch.BorderSizePixel = 0
+UI.atkPlayerSearch.ClearTextOnFocus = false
+UI.atkPlayerSearch.PlaceholderText = "Search player..."
+UI.atkPlayerSearch.PlaceholderColor3 = Color3.fromRGB(145,145,155)
+UI.atkPlayerSearch.Text = ""
+UI.atkPlayerSearch.TextColor3 = Color3.fromRGB(245,245,248)
+UI.atkPlayerSearch.TextSize = 13
+UI.atkPlayerSearch.Font = Enum.Font.GothamMedium
+UI.atkPlayerSearch.TextXAlignment = Enum.TextXAlignment.Left
+UI.atkPlayerSearch.LayoutOrder = 8
+UI.atkPlayerSearch.Parent = UI.atkPlayerContent
+local apsp=Instance.new("UIPadding"); apsp.PaddingLeft=UDim.new(0,12); apsp.PaddingRight=UDim.new(0,12); apsp.Parent=UI.atkPlayerSearch
+local apsc=Instance.new("UICorner"); apsc.CornerRadius=UDim.new(0,8); apsc.Parent=UI.atkPlayerSearch
 
 UI.atkPlayerList = Instance.new("ScrollingFrame")
 UI.atkPlayerList.Size = UDim2.new(1,0,0,190)
@@ -2132,7 +2112,7 @@ UI.atkPlayerList.ScrollBarImageColor3 = Color3.fromRGB(220,135,40)
 UI.atkPlayerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
 UI.atkPlayerList.CanvasSize = UDim2.fromOffset(0,0)
 UI.atkPlayerList.ScrollingDirection = Enum.ScrollingDirection.Y
-UI.atkPlayerList.LayoutOrder = 10
+UI.atkPlayerList.LayoutOrder = 9
 UI.atkPlayerList.Parent = UI.atkPlayerContent
 local aplc=Instance.new("UICorner"); aplc.CornerRadius=UDim.new(0,9); aplc.Parent=UI.atkPlayerList
 local app=Instance.new("UIPadding"); app.PaddingTop=UDim.new(0,7); app.PaddingBottom=UDim.new(0,7); app.PaddingLeft=UDim.new(0,7); app.PaddingRight=UDim.new(0,7); app.Parent=UI.atkPlayerList
@@ -2159,9 +2139,6 @@ updatePlayerFlySpeedVisuals = function()
     if UI.playerFlySpeedFill then UI.playerFlySpeedFill.Size = UDim2.fromScale(percent,1) end
     if UI.playerFlySpeedKnob then UI.playerFlySpeedKnob.Position = UDim2.new(percent,0,0.5,0) end
     if UI.playerFlySpeedLabel then UI.playerFlySpeedLabel.Text = "Fly Speed (Shared): " .. tostring(Config.FlySpeed) end
-    if UI.atkPlayerFlySpeedFill then UI.atkPlayerFlySpeedFill.Size = UDim2.fromScale(percent,1) end
-    if UI.atkPlayerFlySpeedKnob then UI.atkPlayerFlySpeedKnob.Position = UDim2.new(percent,0,0.5,0) end
-    if UI.atkPlayerFlySpeedLabel then UI.atkPlayerFlySpeedLabel.Text = "Fly Speed (Shared): " .. tostring(Config.FlySpeed) end
 end
 
 local function setSharedFlySpeedFromSlider(slider, x)
@@ -2177,12 +2154,32 @@ refreshAtkPlayerList = function()
     for _, child in ipairs(UI.atkPlayerList:GetChildren()) do
         if child:IsA("TextButton") then child:Destroy() end
     end
+
+    local query = ""
+    if UI.atkPlayerSearch then
+        query = string.lower(UI.atkPlayerSearch.Text or "")
+        query = string.gsub(query, "^%s*(.-)%s*$", "%1")
+    end
+
     local list = {}
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= player then table.insert(list, plr) end
+        if plr ~= player then
+            local username = string.lower(plr.Name or "")
+            local displayName = string.lower(plr.DisplayName or "")
+            if query == ""
+                or string.find(username, query, 1, true)
+                or string.find(displayName, query, 1, true) then
+                table.insert(list, plr)
+            end
+        end
     end
-    table.sort(list, function(a,b) return string.lower(a.Name) < string.lower(b.Name) end)
+
+    table.sort(list, function(a,b)
+        return string.lower(a.Name) < string.lower(b.Name)
+    end)
+
     UI.atkPlayerListLabel.Text = "Players (" .. tostring(#list) .. ")"
+
     for i, plr in ipairs(list) do
         local key = tostring(plr.UserId)
         local selected = State.SelectedPlayers[key] == true
@@ -2191,7 +2188,8 @@ refreshAtkPlayerList = function()
         b.BackgroundColor3 = selected and Color3.fromRGB(45,170,95) or Color3.fromRGB(62,62,74)
         b.BorderSizePixel = 0
         local species = plr.Character and (plr.Character:GetAttribute("Species") or plr.Character.Name) or "No Character"
-        b.Text = (selected and "☑ " or "☐ ") .. plr.Name .. "  [" .. tostring(species) .. "]"
+        local display = plr.DisplayName and plr.DisplayName ~= plr.Name and (plr.DisplayName .. " (@" .. plr.Name .. ")") or plr.Name
+        b.Text = (selected and "☑ " or "☐ ") .. display .. "  [" .. tostring(species) .. "]"
         b.TextColor3 = Color3.new(1,1,1)
         b.TextSize = 13
         b.Font = Enum.Font.GothamMedium
@@ -2201,12 +2199,20 @@ refreshAtkPlayerList = function()
         local bp=Instance.new("UIPadding"); bp.PaddingLeft=UDim.new(0,12); bp.Parent=b
         local bc=Instance.new("UICorner"); bc.CornerRadius=UDim.new(0,8); bc.Parent=b
         addConnection(b.Activated:Connect(function()
-            State.SelectedPlayers[key] = not State.SelectedPlayers[key]
+            local wasSelected = State.SelectedPlayers[key] == true
+            table.clear(State.SelectedPlayers)
+            if not wasSelected then
+                State.SelectedPlayers[key] = true
+            end
             refreshAtkPlayerList()
             if Config.AtkPlayerEnabled then startAtkPlayer() end
         end))
     end
 end
+
+addConnection(UI.atkPlayerSearch:GetPropertyChangedSignal("Text"):Connect(function()
+    refreshAtkPlayerList()
+end))
 
 UI.logoButton = Instance.new("TextButton")
 UI.logoButton.Size = UDim2.fromOffset(58, 58)
@@ -2392,15 +2398,6 @@ end
 addConnection(UI.playerFlySpeedSlider.InputBegan:Connect(beginPlayerFlySlider))
 addConnection(UI.playerFlySpeedKnob.InputBegan:Connect(beginPlayerFlySlider))
 
-local function beginAtkPlayerFlySlider(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        State.DraggingAtkPlayerFlySlider = true
-        setSharedFlySpeedFromSlider(UI.atkPlayerFlySpeedSlider, input.Position.X)
-    end
-end
-addConnection(UI.atkPlayerFlySpeedSlider.InputBegan:Connect(beginAtkPlayerFlySlider))
-addConnection(UI.atkPlayerFlySpeedKnob.InputBegan:Connect(beginAtkPlayerFlySlider))
-
 local function beginAutoAttackSlider(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
@@ -2445,13 +2442,6 @@ addConnection(UserInputService.InputChanged:Connect(function(input)
         setSharedFlySpeedFromSlider(UI.playerFlySpeedSlider, input.Position.X)
     end
 
-    if State.DraggingAtkPlayerFlySlider and (
-        input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch
-    ) then
-        setSharedFlySpeedFromSlider(UI.atkPlayerFlySpeedSlider, input.Position.X)
-    end
-
     if State.DraggingAtkPlayerDistanceSlider and (
         input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch
@@ -2479,7 +2469,6 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
         State.DraggingAutoFarmSlider = false
         State.DraggingAutoAttackSlider = false
         State.DraggingPlayerFlySlider = false
-        State.DraggingAtkPlayerFlySlider = false
         State.DraggingAtkPlayerDistanceSlider = false
         State.DraggingWindow = false
     end
