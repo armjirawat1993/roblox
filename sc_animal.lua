@@ -34,6 +34,7 @@ local Config = {
     PlayerFlyEnabled = false,
     PlayerNoClipEnabled = false,
     AtkPlayerEnabled = false,
+    AtkPlayerNearbyEnabled = false,
     AtkPlayerSide = "Behind", -- fixed behind
     AtkPlayerDistance = 3,
     MinAtkPlayerDistance = 1,
@@ -63,6 +64,7 @@ local State = {
     PlayerNoClipWorker = nil,
     PlayerNoClipOriginal = {},
     AtkPlayerWorker = nil,
+    NearbyAtkTargetUserId = nil,
     AtkPlayerActiveTween = nil,
     DraggingAtkPlayerDistanceSlider = false,
     LightingEffectBackup = {},
@@ -71,6 +73,7 @@ local State = {
 
 local UI = {}
 local connections = {}
+local refreshAtkPlayerList
 
 local function addConnection(connection)
     table.insert(connections, connection)
@@ -626,6 +629,25 @@ local function hasSelectedPlayer()
     return false
 end
 
+local function getNearestAlivePlayer()
+    local root = getRootPart()
+    if not root then return nil end
+
+    local best, bestDist = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player and isPlayerAlive(plr) then
+            local pr = getPlayerRoot(plr)
+            if pr then
+                local d = (pr.Position - root.Position).Magnitude
+                if d < bestDist then
+                    best, bestDist = plr, d
+                end
+            end
+        end
+    end
+    return best
+end
+
 local function getNearestSelectedPlayer()
     local root = getRootPart()
     if not root then return nil end
@@ -643,6 +665,40 @@ local function getNearestSelectedPlayer()
         end
     end
     return best
+end
+
+local function getNearbyAtkPlayer()
+    if not Config.AtkPlayerNearbyEnabled then return nil end
+
+    local current = State.NearbyAtkTargetUserId
+        and Players:GetPlayerByUserId(State.NearbyAtkTargetUserId) or nil
+
+    if current and isPlayerAlive(current) then
+        return current
+    end
+
+    State.NearbyAtkTargetUserId = nil
+    local nextPlayer = getNearestAlivePlayer()
+    table.clear(State.SelectedPlayers)
+    State.NearbyAtkTargetUserId = nil
+
+    if nextPlayer then
+        State.NearbyAtkTargetUserId = nextPlayer.UserId
+        State.SelectedPlayers[tostring(nextPlayer.UserId)] = true
+    end
+
+    if refreshAtkPlayerList then
+        task.defer(refreshAtkPlayerList)
+    end
+
+    return nextPlayer
+end
+
+local function getAtkPlayerTarget()
+    if Config.AtkPlayerNearbyEnabled then
+        return getNearbyAtkPlayer()
+    end
+    return getNearestSelectedPlayer()
 end
 
 local function cancelAtkPlayerTween()
@@ -666,7 +722,7 @@ local function startAtkPlayer()
 
     State.AtkPlayerWorker = task.spawn(function()
         while not State.Closed and Config.AtkPlayerEnabled do
-            local targetPlayer = getNearestSelectedPlayer()
+            local targetPlayer = getAtkPlayerTarget()
             local root = getRootPart()
             local targetRoot = targetPlayer and getPlayerRoot(targetPlayer)
 
@@ -699,6 +755,14 @@ local function startAtkPlayer()
     end)
 end
 
+local function updateAtkPlayerNearbyButton()
+    if UI.atkPlayerNearbyToggle then
+        UI.atkPlayerNearbyToggle.Text = Config.AtkPlayerNearbyEnabled and "ON" or "OFF"
+        UI.atkPlayerNearbyToggle.BackgroundColor3 = Config.AtkPlayerNearbyEnabled
+            and Color3.fromRGB(45,170,95) or Color3.fromRGB(75,75,88)
+    end
+end
+
 local function setAtkPlayerEnabled(enabled)
     Config.AtkPlayerEnabled = enabled == true
     if Config.AtkPlayerEnabled then
@@ -706,12 +770,34 @@ local function setAtkPlayerEnabled(enabled)
         startAtkPlayer()
     else
         stopAtkPlayer()
+        if Config.AtkPlayerNearbyEnabled then
+            Config.AtkPlayerNearbyEnabled = false
+            State.NearbyAtkTargetUserId = nil
+            table.clear(State.SelectedPlayers)
+        end
+        updateAtkPlayerNearbyButton()
         setAutoAttackEnabled(false)
     end
     if UI.atkPlayerToggle then
         UI.atkPlayerToggle.Text = Config.AtkPlayerEnabled and "ON" or "OFF"
         UI.atkPlayerToggle.BackgroundColor3 = Config.AtkPlayerEnabled and Color3.fromRGB(45,170,95) or Color3.fromRGB(75,75,88)
     end
+end
+
+local function setAtkPlayerNearbyEnabled(enabled)
+    Config.AtkPlayerNearbyEnabled = enabled == true
+    State.NearbyAtkTargetUserId = nil
+    table.clear(State.SelectedPlayers)
+
+    if Config.AtkPlayerNearbyEnabled then
+        getNearbyAtkPlayer()
+        setAtkPlayerEnabled(true)
+    else
+        setAtkPlayerEnabled(false)
+    end
+
+    updateAtkPlayerNearbyButton()
+    if refreshAtkPlayerList then task.defer(refreshAtkPlayerList) end
 end
 
 local WolfActions = ReplicatedStorage:FindFirstChild("WolfActions")
@@ -730,7 +816,7 @@ end
 
 local function getNearestAttackTarget()
     if Config.AtkPlayerEnabled then
-        local selected = getNearestSelectedPlayer()
+        local selected = getAtkPlayerTarget()
         if selected and selected.Character and isPlayerAlive(selected) then
             return selected.Character
         end
@@ -1799,8 +1885,6 @@ for i, data in ipairs(npcColorChoices) do
 end
 
 local updatePlayerFlySpeedVisuals
-local refreshAtkPlayerList
-
 local function showPage(pageName)
     local autoAttack = pageName == "AutoAttack"
     local esp = pageName == "ESP"
@@ -1825,12 +1909,22 @@ local function showPage(pageName)
 
     if autoAttack then
         updateAutoAttackSliderVisual()
-        setAutoAttackEnabled(Config.AutoAttackEnabled)
+        if UI.autoAttackToggle then
+            UI.autoAttackToggle.Text = Config.AutoAttackEnabled and "ON" or "OFF"
+            UI.autoAttackToggle.BackgroundColor3 = Config.AutoAttackEnabled
+                and Color3.fromRGB(45, 170, 95)
+                or Color3.fromRGB(75, 75, 88)
+        end
     elseif esp then
         refreshAutoFarmGroupList()
         refreshNPCESP()
         updateAutoFarmSliderVisual()
-        setAutoFarmEnabled(Config.AutoFarmEnabled)
+        if UI.autoFarmToggle then
+            UI.autoFarmToggle.Text = Config.AutoFarmEnabled and "ON" or "OFF"
+            UI.autoFarmToggle.BackgroundColor3 = Config.AutoFarmEnabled
+                and Color3.fromRGB(45, 170, 95)
+                or Color3.fromRGB(75, 75, 88)
+        end
     elseif playerPage then
         setPlayerESPEnabled(Config.PlayerESPEnabled)
         setPlayerNameEnabled(Config.PlayerNameEnabled)
@@ -1839,7 +1933,12 @@ local function showPage(pageName)
     elseif atkPlayer then
         refreshAtkPlayerList()
         updatePlayerFlySpeedVisuals()
-        setAtkPlayerEnabled(Config.AtkPlayerEnabled)
+        if UI.atkPlayerToggle then
+            UI.atkPlayerToggle.Text = Config.AtkPlayerEnabled and "ON" or "OFF"
+            UI.atkPlayerToggle.BackgroundColor3 = Config.AtkPlayerEnabled
+                and Color3.fromRGB(45, 170, 95)
+                or Color3.fromRGB(75, 75, 88)
+        end
     elseif effectPage then
         setRemoveLightingEffects(Config.RemoveLightingEffects)
         setBrightLighting(Config.BrightLightingEnabled)
@@ -2045,6 +2144,19 @@ UI.atkPlayerToggle.TextSize = 14
 UI.atkPlayerToggle.Parent = atkToggleRow
 local atc = Instance.new("UICorner"); atc.CornerRadius=UDim.new(0,8); atc.Parent=UI.atkPlayerToggle
 
+local atkNearbyRow = makeRow(UI.atkPlayerContent, "Atk Player ใกล้ตัว", 3)
+UI.atkPlayerNearbyToggle = Instance.new("TextButton")
+UI.atkPlayerNearbyToggle.Size = UDim2.fromOffset(100,38)
+UI.atkPlayerNearbyToggle.Position = UDim2.new(1,-100,0,2)
+UI.atkPlayerNearbyToggle.BackgroundColor3 = Color3.fromRGB(75,75,88)
+UI.atkPlayerNearbyToggle.BorderSizePixel = 0
+UI.atkPlayerNearbyToggle.Text = "OFF"
+UI.atkPlayerNearbyToggle.TextColor3 = Color3.new(1,1,1)
+UI.atkPlayerNearbyToggle.Font = Enum.Font.GothamBold
+UI.atkPlayerNearbyToggle.TextSize = 14
+UI.atkPlayerNearbyToggle.Parent = atkNearbyRow
+local atnc = Instance.new("UICorner"); atnc.CornerRadius=UDim.new(0,8); atnc.Parent=UI.atkPlayerNearbyToggle
+
 UI.atkPlayerDistanceLabel = Instance.new("TextLabel")
 UI.atkPlayerDistanceLabel.Size = UDim2.new(1, -32, 0, 26)
 UI.atkPlayerDistanceLabel.BackgroundTransparency = 1
@@ -2088,7 +2200,7 @@ UI.atkPlayerListLabel.TextColor3 = Color3.fromRGB(225,225,230)
 UI.atkPlayerListLabel.TextSize = 14
 UI.atkPlayerListLabel.Font = Enum.Font.GothamBold
 UI.atkPlayerListLabel.TextXAlignment = Enum.TextXAlignment.Left
-UI.atkPlayerListLabel.LayoutOrder = 7
+UI.atkPlayerListLabel.LayoutOrder = 8
 UI.atkPlayerListLabel.Parent = UI.atkPlayerContent
 
 UI.atkPlayerSearch = Instance.new("TextBox")
@@ -2103,7 +2215,7 @@ UI.atkPlayerSearch.TextColor3 = Color3.fromRGB(245,245,248)
 UI.atkPlayerSearch.TextSize = 13
 UI.atkPlayerSearch.Font = Enum.Font.GothamMedium
 UI.atkPlayerSearch.TextXAlignment = Enum.TextXAlignment.Left
-UI.atkPlayerSearch.LayoutOrder = 8
+UI.atkPlayerSearch.LayoutOrder = 9
 UI.atkPlayerSearch.Parent = UI.atkPlayerContent
 local apsp=Instance.new("UIPadding"); apsp.PaddingLeft=UDim.new(0,12); apsp.PaddingRight=UDim.new(0,12); apsp.Parent=UI.atkPlayerSearch
 local apsc=Instance.new("UICorner"); apsc.CornerRadius=UDim.new(0,8); apsc.Parent=UI.atkPlayerSearch
@@ -2118,7 +2230,7 @@ UI.atkPlayerList.ScrollBarImageColor3 = Color3.fromRGB(220,135,40)
 UI.atkPlayerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
 UI.atkPlayerList.CanvasSize = UDim2.fromOffset(0,0)
 UI.atkPlayerList.ScrollingDirection = Enum.ScrollingDirection.Y
-UI.atkPlayerList.LayoutOrder = 9
+UI.atkPlayerList.LayoutOrder = 10
 UI.atkPlayerList.Parent = UI.atkPlayerContent
 local aplc=Instance.new("UICorner"); aplc.CornerRadius=UDim.new(0,9); aplc.Parent=UI.atkPlayerList
 local app=Instance.new("UIPadding"); app.PaddingTop=UDim.new(0,7); app.PaddingBottom=UDim.new(0,7); app.PaddingLeft=UDim.new(0,7); app.PaddingRight=UDim.new(0,7); app.Parent=UI.atkPlayerList
@@ -2206,6 +2318,9 @@ refreshAtkPlayerList = function()
         local bc=Instance.new("UICorner"); bc.CornerRadius=UDim.new(0,8); bc.Parent=b
         addConnection(b.Activated:Connect(function()
             local wasSelected = State.SelectedPlayers[key] == true
+            Config.AtkPlayerNearbyEnabled = false
+            State.NearbyAtkTargetUserId = nil
+            updateAtkPlayerNearbyButton()
             table.clear(State.SelectedPlayers)
             if not wasSelected then
                 State.SelectedPlayers[key] = true
@@ -2308,9 +2423,26 @@ if npcFolderForEvents then
     end))
 end
 
+local function bindAtkPlayerDeath(plr, character)
+    if plr == player or not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+        or character:WaitForChild("Humanoid", 5)
+    if not humanoid then return end
+
+    addConnection(humanoid.Died:Connect(function()
+        local key = tostring(plr.UserId)
+        State.SelectedPlayers[key] = nil
+        if State.NearbyAtkTargetUserId == plr.UserId then
+            State.NearbyAtkTargetUserId = nil
+        end
+        if refreshAtkPlayerList then task.defer(refreshAtkPlayerList) end
+    end))
+end
+
 addConnection(Players.PlayerAdded:Connect(function(plr)
-    addConnection(plr.CharacterAdded:Connect(function()
+    addConnection(plr.CharacterAdded:Connect(function(character)
         task.wait(0.2)
+        bindAtkPlayerDeath(plr, character)
         refreshPlayerESP()
         refreshAtkPlayerList()
     end))
@@ -2321,13 +2453,18 @@ end))
 addConnection(Players.PlayerRemoving:Connect(function(plr)
     removePlayerESP(plr)
     State.SelectedPlayers[tostring(plr.UserId)] = nil
+    if State.NearbyAtkTargetUserId == plr.UserId then State.NearbyAtkTargetUserId = nil end
     task.defer(refreshAtkPlayerList)
 end))
 
 for _, plr in ipairs(Players:GetPlayers()) do
     if plr ~= player then
-        addConnection(plr.CharacterAdded:Connect(function()
+        if plr.Character then
+            task.defer(bindAtkPlayerDeath, plr, plr.Character)
+        end
+        addConnection(plr.CharacterAdded:Connect(function(character)
             task.wait(0.2)
+            bindAtkPlayerDeath(plr, character)
             refreshPlayerESP()
             refreshAtkPlayerList()
         end))
@@ -2388,6 +2525,10 @@ end))
 
 addConnection(UI.atkPlayerToggle.Activated:Connect(function()
     setAtkPlayerEnabled(not Config.AtkPlayerEnabled)
+end))
+
+addConnection(UI.atkPlayerNearbyToggle.Activated:Connect(function()
+    setAtkPlayerNearbyEnabled(not Config.AtkPlayerNearbyEnabled)
 end))
 
 local function beginAtkPlayerDistanceSlider(input)
