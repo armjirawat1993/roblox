@@ -596,7 +596,7 @@ State.startPlayerNoClip = function()
                     end
                 end
             end
-            task.wait()
+            task.wait(0.12)
         end
         State.PlayerNoClipWorker = nil
     end)
@@ -676,7 +676,9 @@ local function startAtkPlayer()
                 local targetPos = targetRoot.Position
                 local delta = attach.Position - root.Position
                 local dist = delta.Magnitude
-                local step = math.max(Config.FlySpeed, 1) * 0.03
+                local dt = RunService.Heartbeat:Wait()
+                dt = math.clamp(dt, 1 / 240, 0.1)
+                local step = math.max(Config.FlySpeed, 1) * dt
 
                 cancelAtkPlayerTween()
                 local newPos
@@ -689,8 +691,9 @@ local function startAtkPlayer()
                 root.CFrame = CFrame.lookAt(newPos, targetPos)
                 root.AssemblyLinearVelocity = Vector3.zero
                 root.AssemblyAngularVelocity = Vector3.zero
+            else
+                task.wait(0.08)
             end
-            task.wait(0.03)
         end
         State.AtkPlayerWorker = nil
     end)
@@ -978,9 +981,12 @@ local function startAutoFarm()
     end
 
     State.AutoFarmWorker = task.spawn(function()
+        local target = nil
         while not State.Closed and Config.AutoFarmEnabled and hasSelectedFarmGroup() do
             local root = getRootPart()
-            local target = getNearestSelectedFarmTarget()
+            if not target or not isFarmTargetAlive(target) then
+                target = getNearestSelectedFarmTarget()
+            end
 
             if root and target then
                 local targetPart = getNPCPrimaryPart(target)
@@ -2279,27 +2285,28 @@ addConnection(Lighting.ChildAdded:Connect(function(object)
     end
 end))
 
-addConnection(workspace.DescendantAdded:Connect(function(object)
-    local folder = getFeralNPCFolder()
-    if folder and object:IsDescendantOf(folder) then
-        task.defer(function()
-            refreshNPCGroupList()
-            refreshNPCESP()
-            refreshAutoFarmGroupList()
-        end)
-    end
-end))
+local npcRefreshQueued = false
+local function queueNPCRefresh()
+    if npcRefreshQueued or State.Closed then return end
+    npcRefreshQueued = true
+    task.delay(0.12, function()
+        npcRefreshQueued = false
+        if State.Closed then return end
+        refreshNPCGroupList()
+        refreshNPCESP()
+        refreshAutoFarmGroupList()
+    end)
+end
 
-addConnection(workspace.DescendantRemoving:Connect(function(object)
-    local folder = getFeralNPCFolder()
-    if folder and object:IsDescendantOf(folder) then
-        task.defer(function()
-            refreshNPCGroupList()
-            refreshNPCESP()
-            refreshAutoFarmGroupList()
-        end)
-    end
-end))
+local npcFolderForEvents = getFeralNPCFolder()
+if npcFolderForEvents then
+    addConnection(npcFolderForEvents.ChildAdded:Connect(function(object)
+        if object:IsA("Model") then queueNPCRefresh() end
+    end))
+    addConnection(npcFolderForEvents.ChildRemoved:Connect(function(object)
+        if object:IsA("Model") then queueNPCRefresh() end
+    end))
+end
 
 addConnection(Players.PlayerAdded:Connect(function(plr)
     addConnection(plr.CharacterAdded:Connect(function()
@@ -2327,8 +2334,12 @@ for _, plr in ipairs(Players:GetPlayers()) do
     end
 end
 
-addConnection(RunService.RenderStepped:Connect(function()
+local playerNameAccum = 0
+addConnection(RunService.Heartbeat:Connect(function(dt)
     if not Config.PlayerNameEnabled then return end
+    playerNameAccum += dt
+    if playerNameAccum < 0.10 then return end
+    playerNameAccum = 0
 
     local myRoot = getPlayerRoot(player)
     if not myRoot then return end
@@ -2342,8 +2353,7 @@ addConnection(RunService.RenderStepped:Connect(function()
                 local label = billboard and billboard:FindFirstChild("Label")
                 if label then
                     local species = character:GetAttribute("Species") or character.Name
-                    local distanceStuds = (myRoot.Position - targetRoot.Position).Magnitude
-                    local distanceMeters = distanceStuds * 0.28
+                    local distanceMeters = (myRoot.Position - targetRoot.Position).Magnitude * 0.28
                     label.Text = plr.Name .. "\n" .. tostring(species) .. "  •  " .. string.format("%.1f m", distanceMeters)
                     label.TextColor3 = Config.PlayerESPColor
                 end
