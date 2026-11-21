@@ -1,1089 +1,717 @@
---==================================================
--- Amulet Authenticity Checker UI
--- Tray1 - Tray9
---
--- GREEN  = REAL
--- RED    = FAKE
--- YELLOW = UNKNOWN
---
--- Detect:
--- MeshId + SurfaceAppearance
---
--- RightShift = Show / Hide UI
---==================================================
+local P = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-local UserInputService = game:GetService("UserInputService")
+local LP = P.LocalPlayer
+local GUI = LP:WaitForChild("PlayerGui")
+local Plots = workspace:WaitForChild("Plots")
+local Meshes = RS:WaitForChild("AmuletMeshes")
 
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local ENV = getgenv()
+ENV.AmuletCheckerVersion = (ENV.AmuletCheckerVersion or 0) + 1
+local VER = ENV.AmuletCheckerVersion
 
-local Plots = Workspace:WaitForChild("Plots")
-local AmuletMeshes = ReplicatedStorage:WaitForChild("AmuletMeshes")
+local Fake = {}
+local MeshCache = {}
+local VariantInfo = {}
+local Last = {}
 
---==================================================
--- STOP OLD INSTANCE
---==================================================
+local Enabled = true
+local HL = "AmuletAuthenticityHighlight"
 
-getgenv().AmuletCheckerVersion =
-    (getgenv().AmuletCheckerVersion or 0) + 1
-
-local THIS_VERSION =
-    getgenv().AmuletCheckerVersion
-
-getgenv().AmuletCheckRunning = false
-
-task.wait(0.15)
-
-getgenv().AmuletCheckRunning = true
-
---==================================================
--- REMOVE OLD UI
---==================================================
-
-local oldUI =
-    PlayerGui:FindFirstChild("AmuletCheckerUI")
-
-if oldUI then
-    oldUI:Destroy()
-end
-
---==================================================
--- CONFIG
---==================================================
-
-local MAX_TRAY = 9
-local CHECK_INTERVAL = 0.75
-
-local HIGHLIGHT_NAME =
-    "AmuletAuthenticityHighlight"
-
-local Config = {
-    Enabled = true
+local C = {
+	Real = Color3.fromRGB(40,255,90),
+	Fake = Color3.fromRGB(255,50,50),
+	Unknown = Color3.fromRGB(255,220,40)
 }
 
-local COLORS = {
-    Real = Color3.fromRGB(50, 255, 80),
-    Fake = Color3.fromRGB(255, 60, 60),
-    Unknown = Color3.fromRGB(255, 220, 40)
-}
-
---==================================================
--- CLEAR OLD HIGHLIGHTS
---==================================================
-
-local function clearHighlights()
-    for _, obj in ipairs(Plots:GetDescendants()) do
-        if obj:IsA("Highlight")
-            and obj.Name == HIGHLIGHT_NAME then
-
-            obj:Destroy()
-        end
-    end
+local function up(v)
+	return string.upper(tostring(v or ""))
 end
 
-clearHighlights()
-
---==================================================
--- ASSET ID NORMALIZE
---==================================================
-
-local function normalizeAssetId(id)
-    if id == nil then
-        return ""
-    end
-
-    return tostring(id):gsub("%s+", "")
+local function id(v)
+	return tostring(v or ""):gsub("%s+","")
 end
 
---==================================================
--- SURFACE SIGNATURE
---==================================================
+local function count(t)
+	local n = 0
 
-local function getMeshSignature(mesh)
-    if not mesh
-        or not mesh:IsA("MeshPart") then
+	for _ in pairs(t) do
+		n += 1
+	end
 
-        return nil
-    end
+	return n
+end
 
-    local surface =
-        mesh:FindFirstChildOfClass(
-            "SurfaceAppearance"
-        )
+local function sig(m)
+	if not m or not m:IsA("MeshPart") then
+		return nil
+	end
 
-    local colorMap = ""
-    local normalMap = ""
-    local roughnessMap = ""
-    local metalnessMap = ""
+	local s = m:FindFirstChildOfClass("SurfaceAppearance")
 
-    if surface then
-        colorMap =
-            normalizeAssetId(
-                surface.ColorMap
-            )
-
-        normalMap =
-            normalizeAssetId(
-                surface.NormalMap
-            )
-
-        roughnessMap =
-            normalizeAssetId(
-                surface.RoughnessMap
-            )
-
-        metalnessMap =
-            normalizeAssetId(
-                surface.MetalnessMap
-            )
-    end
-
-    return table.concat({
-        normalizeAssetId(mesh.MeshId),
-        colorMap,
-        normalMap,
-        roughnessMap,
-        metalnessMap
-    }, "|")
+	return table.concat({
+		id(m.MeshId),
+		s and id(s.ColorMap) or "",
+		s and id(s.NormalMap) or "",
+		s and id(s.RoughnessMap) or "",
+		s and id(s.MetalnessMap) or ""
+	},"|")
 end
 
 --==================================================
--- CACHE
---
--- Signature -> Variant
--- MeshId -> list of Variants
+-- LOAD FAKE CATALOG
 --==================================================
 
-local SignatureCache = {}
-local MeshIdCache = {}
+local function loadFake()
+	table.clear(Fake)
 
-local function buildMeshCache()
-    table.clear(SignatureCache)
-    table.clear(MeshIdCache)
+	local lab = RS:FindFirstChild("AmuletLab")
 
-    local count = 0
+	if not lab then
+		warn("[Amulet] AmuletLab not found")
+		return false
+	end
 
-    for _, obj in ipairs(
-        AmuletMeshes:GetDescendants()
-    ) do
-        if obj:IsA("MeshPart") then
-            count += 1
+	local function add(v)
+		if type(v) == "string" then
+			Fake[up(v)] = true
+		end
+	end
 
-            local signature =
-                getMeshSignature(obj)
+	local function scan(t, seen)
+		if type(t) ~= "table" then
+			return
+		end
 
-            if signature then
-                SignatureCache[signature] =
-                    obj.Name
-            end
+		seen = seen or {}
 
-            local meshId =
-                normalizeAssetId(
-                    obj.MeshId
-                )
+		if seen[t] then
+			return
+		end
 
-            if meshId ~= "" then
-                MeshIdCache[meshId] =
-                    MeshIdCache[meshId]
-                    or {}
+		seen[t] = true
 
-                table.insert(
-                    MeshIdCache[meshId],
-                    obj.Name
-                )
-            end
-        end
-    end
+		for k, v in pairs(t) do
+			local n = type(k) == "string"
+				and k:lower()
+				or ""
 
-    print(
-        "[Amulet Checker]",
-        "Mesh cache loaded:",
-        count
-    )
+			if n == "fake"
+				and type(v) == "string" then
+
+				add(v)
+			end
+
+			if (n == "fakes"
+				or n == "fakerevisionvariants")
+				and type(v) == "table" then
+
+				for a, b in pairs(v) do
+					if type(b) == "string" then
+						add(b)
+
+					elseif b == true
+						and type(a) == "string" then
+
+						add(a)
+					end
+				end
+			end
+
+			if type(v) == "table" then
+				scan(v, seen)
+			end
+		end
+	end
+
+	local ok, data = pcall(require, lab)
+
+	if ok then
+		scan(data)
+	end
+
+	if type(decompile) == "function" then
+		local ok2, src = pcall(decompile, lab)
+
+		if ok2 and type(src) == "string" then
+
+			for v in src:gmatch(
+				'Fake%s*=%s*"([^"]+)"'
+			) do
+				add(v)
+			end
+
+			for v in src:gmatch(
+				'\\"Fake\\"%s*:%s*\\"([^\\"]+)\\"'
+			) do
+				add(v)
+			end
+		end
+	end
+
+	print(
+		"[Amulet] Fake Catalog:",
+		count(Fake)
+	)
+
+	return count(Fake) > 0
 end
 
-buildMeshCache()
+--==================================================
+-- LOAD MESH CACHE
+--==================================================
+
+local function loadMeshes()
+	table.clear(MeshCache)
+	table.clear(VariantInfo)
+
+	for _, o in ipairs(
+		Meshes:GetDescendants()
+	) do
+
+		if o:IsA("MeshPart") then
+			local n = up(o.Name)
+			local mid = id(o.MeshId)
+
+			MeshCache[mid] =
+				MeshCache[mid]
+				or {}
+
+			table.insert(
+				MeshCache[mid],
+				n
+			)
+
+			VariantInfo[n] = {
+				Sig = sig(o)
+			}
+		end
+	end
+end
+
+local FakeReady = loadFake()
+
+loadMeshes()
 
 --==================================================
 -- FIND VARIANT
---
--- 1. Mesh + Surface exact
--- 2. fallback MeshId
 --==================================================
 
-local function findVariant(meshPart)
-    if not meshPart
-        or not meshPart:IsA("MeshPart") then
+local function findVariant(body, model)
+	local list =
+		MeshCache[
+			id(body.MeshId)
+		]
 
-        return nil, "INVALID"
-    end
+	if not list
+		or #list == 0 then
 
-    -- exact signature
-    local signature =
-        getMeshSignature(meshPart)
+		return nil, "NO_MESH"
+	end
 
-    if signature
-        and SignatureCache[signature] then
+	if #list == 1 then
+		return list[1], "MESH"
+	end
 
-        return SignatureCache[signature],
-            "SIGNATURE"
-    end
+	local s = sig(body)
+	local match = {}
 
-    -- fallback MeshId
-    local meshId =
-        normalizeAssetId(
-            meshPart.MeshId
-        )
+	for _, v in ipairs(list) do
 
-    local variants =
-        MeshIdCache[meshId]
+		if VariantInfo[v]
+			and VariantInfo[v].Sig == s then
 
-    if variants
-        and #variants == 1 then
+			table.insert(
+				match,
+				v
+			)
+		end
+	end
 
-        return variants[1],
-            "MESH"
-    end
+	if #match == 1 then
+		return match[1], "SURFACE"
+	end
 
-    -- ถ้า MeshId ตรงหลาย Variant
-    -- แต่ Surface ไม่ตรง ไม่ควรเดา
-    if variants
-        and #variants > 1 then
+	local base = up(model)
 
-        return nil,
-            "AMBIGUOUS"
-    end
+	local real = {}
+	local fake = {}
 
-    return nil,
-        "UNKNOWN"
-end
+	for _, v in ipairs(list) do
 
---==================================================
--- FAKE DETECTION
---
--- หลัก:
--- Model r2 + Variant R2 = REAL
--- Model r2 + Variant R2_F3 = FAKE
--- Model c1 + Variant C1F = FAKE
--- Model c2 + Variant C2S = FAKE
---==================================================
+		if Fake[v] then
 
-local function normalizeModelName(value)
-    if value == nil then
-        return ""
-    end
+			table.insert(
+				fake,
+				v
+			)
 
-    return string.upper(
-        tostring(value)
-    )
-end
+		else
 
-local function isFakeVariant(
-    model,
-    variant
-)
-    if not model or not variant then
-        return nil
-    end
+			table.insert(
+				real,
+				v
+			)
+		end
+	end
 
-    local base =
-        normalizeModelName(model)
+	for _, v in ipairs(real) do
+		if v == base then
+			return v, "BASE"
+		end
+	end
 
-    local actual =
-        normalizeModelName(variant)
+	for _, v in ipairs(real) do
+		if v == base .. "_F0" then
+			return v, "F0"
+		end
+	end
 
-    -- exact base model = genuine
-    if actual == base then
-        return false
-    end
+	if #real == 1 then
+		return real[1], "REAL_UNIQUE"
+	end
 
-    -- explicitly obvious fake formats
-    if string.match(
-        actual,
-        "_F%d+"
-    ) then
-        return true
-    end
+	if #real == 0
+		and #fake > 0 then
 
-    -- เช่น C1F / C2F / C6F
-    if string.match(
-        actual,
-        "^" .. base .. "F%d*$"
-    ) then
-        return true
-    end
+		return fake[1], "ALL_FAKE"
+	end
 
-    -- เช่น C2S
-    -- หาก variant ไม่ตรง base
-    -- ให้ถือว่าเป็น variant ดัดแปลง
-    return true
-end
-
---==================================================
--- FIND PLAYER PLOT
---==================================================
-
-local OWNER_ID_ATTRIBUTES = {
-    "OwnerUserId",
-    "UserId",
-    "PlayerUserId",
-    "OwnerId",
-    "PlotOwnerUserId"
-}
-
-local OWNER_NAME_ATTRIBUTES = {
-    "Owner",
-    "OwnerName",
-    "PlayerName"
-}
-
-local function isMyPlot(plot)
-
-    -- UserId attributes
-    for _, attrName in ipairs(
-        OWNER_ID_ATTRIBUTES
-    ) do
-        local value =
-            plot:GetAttribute(
-                attrName
-            )
-
-        if value ~= nil
-            and tonumber(value)
-                == LocalPlayer.UserId then
-
-            return true
-        end
-    end
-
-    -- Name attributes
-    for _, attrName in ipairs(
-        OWNER_NAME_ATTRIBUTES
-    ) do
-        local value =
-            plot:GetAttribute(
-                attrName
-            )
-
-        if value ~= nil then
-            value =
-                tostring(value)
-
-            if value
-                    == LocalPlayer.Name
-                or value
-                    == LocalPlayer.DisplayName then
-
-                return true
-            end
-        end
-    end
-
-    -- ObjectValue
-    for _, name in ipairs({
-        "Owner",
-        "Player",
-        "PlotOwner"
-    }) do
-        local obj =
-            plot:FindFirstChild(
-                name
-            )
-
-        if obj
-            and obj:IsA(
-                "ObjectValue"
-            )
-            and obj.Value
-                == LocalPlayer then
-
-            return true
-        end
-    end
-
-    return false
-end
-
---==================================================
--- PLOT POSITION
---==================================================
-
-local function getPlotPosition(plot)
-    if plot:IsA("Model") then
-        local ok, pivot =
-            pcall(function()
-                return plot:GetPivot()
-            end)
-
-        if ok and pivot then
-            return pivot.Position
-        end
-    end
-
-    local part =
-        plot:FindFirstChildWhichIsA(
-            "BasePart",
-            true
-        )
-
-    if part then
-        return part.Position
-    end
-
-    return nil
-end
-
---==================================================
--- FIND MY PLOT
---
--- Owner -> nearest fallback
---==================================================
-
-local function findMyPlot()
-
-    -- Owner detection
-    for _, plot in ipairs(
-        Plots:GetChildren()
-    ) do
-        if isMyPlot(plot) then
-            return plot, "Owner"
-        end
-    end
-
-    -- nearest plot
-    local character =
-        LocalPlayer.Character
-
-    local root =
-        character
-        and character:FindFirstChild(
-            "HumanoidRootPart"
-        )
-
-    if not root then
-        return nil, "NoCharacter"
-    end
-
-    local closestPlot = nil
-    local closestDistance =
-        math.huge
-
-    for _, plot in ipairs(
-        Plots:GetChildren()
-    ) do
-        local position =
-            getPlotPosition(plot)
-
-        if position then
-            local distance =
-                (
-                    root.Position
-                    - position
-                ).Magnitude
-
-            if distance
-                < closestDistance then
-
-                closestDistance =
-                    distance
-
-                closestPlot =
-                    plot
-            end
-        end
-    end
-
-    if closestPlot then
-        return closestPlot,
-            "Nearest"
-    end
-
-    return nil,
-        "NotFound"
+	return nil, "UNKNOWN"
 end
 
 --==================================================
 -- HIGHLIGHT
 --==================================================
 
-local function getHighlight(tray)
-    local highlight =
-        tray:FindFirstChild(
-            HIGHLIGHT_NAME
-        )
+local function setHL(tray, result)
+	local h =
+		tray:FindFirstChild(HL)
 
-    if highlight
-        and highlight:IsA(
-            "Highlight"
-        ) then
+	if not h then
 
-        highlight.Adornee =
-            tray
+		h = Instance.new("Highlight")
+		h.Name = HL
+		h.Adornee = tray
 
-        return highlight
-    end
+		h.DepthMode =
+			Enum.HighlightDepthMode.AlwaysOnTop
 
-    highlight =
-        Instance.new("Highlight")
+		h.FillTransparency = 0.55
 
-    highlight.Name =
-        HIGHLIGHT_NAME
+		h.Parent = tray
+	end
 
-    highlight.Adornee =
-        tray
+	local color
 
-    highlight.DepthMode =
-        Enum.HighlightDepthMode
-            .AlwaysOnTop
+	if result == "แท้" then
+		color = C.Real
 
-    highlight.FillTransparency =
-        0.55
+	elseif result == "ปลอม" then
+		color = C.Fake
 
-    highlight.OutlineTransparency =
-        0
+	else
+		color = C.Unknown
+	end
 
-    highlight.Parent =
-        tray
-
-    return highlight
+	h.FillColor = color
+	h.OutlineColor = color
 end
 
-local function removeHighlight(tray)
-    if not tray then
-        return
-    end
+local function clearHL()
+	for _, o in ipairs(
+		Plots:GetDescendants()
+	) do
 
-    local highlight =
-        tray:FindFirstChild(
-            HIGHLIGHT_NAME
-        )
+		if o:IsA("Highlight")
+			and o.Name == HL then
 
-    if highlight then
-        highlight:Destroy()
-    end
+			o:Destroy()
+		end
+	end
 end
 
-local function setHighlightColor(
-    highlight,
-    color
-)
-    highlight.FillColor =
-        color
-
-    highlight.OutlineColor =
-        color
-end
+clearHL()
 
 --==================================================
--- STATE
+-- REMOVE OLD UI
 --==================================================
 
-local LastResults = {}
+local oldUI =
+	GUI:FindFirstChild(
+		"AmuletCheckerUI"
+	)
 
-local RealCount = 0
-local FakeCount = 0
-local UnknownCount = 0
-
-local LastPlot = nil
+if oldUI then
+	oldUI:Destroy()
+end
 
 --==================================================
 -- UI
 --==================================================
 
-local ScreenGui =
-    Instance.new("ScreenGui")
+local SG =
+	Instance.new(
+		"ScreenGui"
+	)
 
-ScreenGui.Name =
-    "AmuletCheckerUI"
+SG.Name =
+	"AmuletCheckerUI"
 
-ScreenGui.ResetOnSpawn =
-    false
+SG.ResetOnSpawn =
+	false
 
-ScreenGui.IgnoreGuiInset =
-    true
-
-ScreenGui.Parent =
-    PlayerGui
-
---==================================================
--- MAIN
---==================================================
+SG.Parent =
+	GUI
 
 local Main =
-    Instance.new("Frame")
-
-Main.Name =
-    "Main"
+	Instance.new(
+		"Frame"
+	)
 
 Main.Size =
-    UDim2.fromOffset(
-        285,
-        205
-    )
+	UDim2.fromOffset(
+		300,
+		150
+	)
 
 Main.Position =
-    UDim2.new(
-        0.5,
-        -142,
-        0.25,
-        0
-    )
+	UDim2.new(
+		0.5,
+		-150,
+		0.2,
+		0
+	)
 
 Main.BackgroundColor3 =
-    Color3.fromRGB(
-        25,
-        25,
-        28
-    )
+	Color3.fromRGB(
+		24,
+		24,
+		28
+	)
 
 Main.BorderSizePixel =
-    0
+	0
 
 Main.Parent =
-    ScreenGui
+	SG
 
-local MainCorner =
-    Instance.new("UICorner")
+local corner =
+	Instance.new(
+		"UICorner"
+	)
 
-MainCorner.CornerRadius =
-    UDim.new(
-        0,
-        10
-    )
+corner.CornerRadius =
+	UDim.new(
+		0,
+		10
+	)
 
-MainCorner.Parent =
-    Main
-
---==================================================
--- TITLE
---==================================================
+corner.Parent =
+	Main
 
 local Title =
-    Instance.new("TextLabel")
+	Instance.new(
+		"TextLabel"
+	)
 
 Title.Size =
-    UDim2.new(
-        1,
-        -20,
-        0,
-        35
-    )
+	UDim2.new(
+		1,
+		-20,
+		0,
+		35
+	)
 
 Title.Position =
-    UDim2.fromOffset(
-        10,
-        4
-    )
+	UDim2.fromOffset(
+		10,
+		5
+	)
 
 Title.BackgroundTransparency =
-    1
+	1
 
 Title.Text =
-    "Amulet Checker"
+	"Amulet Checker"
 
 Title.TextColor3 =
-    Color3.fromRGB(
-        255,
-        255,
-        255
-    )
-
-Title.TextSize =
-    17
+	Color3.new(
+		1,
+		1,
+		1
+	)
 
 Title.Font =
-    Enum.Font.GothamBold
+	Enum.Font.GothamBold
+
+Title.TextSize =
+	17
 
 Title.TextXAlignment =
-    Enum.TextXAlignment.Left
+	Enum.TextXAlignment.Left
+
+Title.Active =
+	true
 
 Title.Parent =
-    Main
-
---==================================================
--- PLOT STATUS
---==================================================
-
-local Status =
-    Instance.new("TextLabel")
-
-Status.Size =
-    UDim2.new(
-        1,
-        -20,
-        0,
-        24
-    )
-
-Status.Position =
-    UDim2.fromOffset(
-        10,
-        39
-    )
-
-Status.BackgroundTransparency =
-    1
-
-Status.Text =
-    "Plot : Searching..."
-
-Status.TextColor3 =
-    Color3.fromRGB(
-        190,
-        190,
-        195
-    )
-
-Status.TextSize =
-    13
-
-Status.Font =
-    Enum.Font.Gotham
-
-Status.TextXAlignment =
-    Enum.TextXAlignment.Left
-
-Status.Parent =
-    Main
-
---==================================================
--- TOGGLE
---==================================================
+	Main
 
 local Toggle =
-    Instance.new("TextButton")
+	Instance.new(
+		"TextButton"
+	)
 
 Toggle.Size =
-    UDim2.new(
-        1,
-        -20,
-        0,
-        38
-    )
+	UDim2.new(
+		1,
+		-20,
+		0,
+		38
+	)
 
 Toggle.Position =
-    UDim2.fromOffset(
-        10,
-        69
-    )
+	UDim2.fromOffset(
+		10,
+		45
+	)
 
 Toggle.BorderSizePixel =
-    0
-
-Toggle.TextSize =
-    14
-
-Toggle.Font =
-    Enum.Font.GothamBold
+	0
 
 Toggle.TextColor3 =
-    Color3.fromRGB(
-        255,
-        255,
-        255
-    )
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Toggle.Font =
+	Enum.Font.GothamBold
+
+Toggle.TextSize =
+	14
 
 Toggle.Parent =
-    Main
+	Main
 
-local ToggleCorner =
-    Instance.new("UICorner")
+local toggleCorner =
+	Instance.new(
+		"UICorner"
+	)
 
-ToggleCorner.CornerRadius =
-    UDim.new(
-        0,
-        7
-    )
+toggleCorner.CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
 
-ToggleCorner.Parent =
-    Toggle
-
---==================================================
--- RESULT
---==================================================
+toggleCorner.Parent =
+	Toggle
 
 local Result =
-    Instance.new("TextLabel")
+	Instance.new(
+		"TextLabel"
+	)
 
 Result.Size =
-    UDim2.new(
-        1,
-        -20,
-        0,
-        28
-    )
+	UDim2.new(
+		1,
+		-20,
+		0,
+		30
+	)
 
 Result.Position =
-    UDim2.fromOffset(
-        10,
-        113
-    )
+	UDim2.fromOffset(
+		10,
+		90
+	)
 
 Result.BackgroundTransparency =
-    1
-
-Result.Text =
-    "แท้ 0 | ปลอม 0 | ? 0"
+	1
 
 Result.TextColor3 =
-    Color3.fromRGB(
-        220,
-        220,
-        225
-    )
-
-Result.TextSize =
-    13
+	Color3.new(
+		1,
+		1,
+		1
+	)
 
 Result.Font =
-    Enum.Font.Gotham
+	Enum.Font.Gotham
+
+Result.TextSize =
+	13
 
 Result.TextXAlignment =
-    Enum.TextXAlignment.Left
+	Enum.TextXAlignment.Left
 
 Result.Parent =
-    Main
+	Main
 
---==================================================
--- LEGEND
---==================================================
+local Info =
+	Instance.new(
+		"TextLabel"
+	)
 
-local Legend =
-    Instance.new("TextLabel")
+Info.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		25
+	)
 
-Legend.Size =
-    UDim2.new(
-        1,
-        -20,
-        0,
-        45
-    )
+Info.Position =
+	UDim2.fromOffset(
+		10,
+		120
+	)
 
-Legend.Position =
-    UDim2.fromOffset(
-        10,
-        145
-    )
+Info.BackgroundTransparency =
+	1
 
-Legend.BackgroundTransparency =
-    1
+Info.Text =
+	"เขียว=แท้ | แดง=ปลอม | เหลือง=?"
 
-Legend.Text =
-    "เขียว = แท้\nแดง = ปลอม   เหลือง = ไม่ทราบ"
+Info.TextColor3 =
+	Color3.fromRGB(
+		160,
+		160,
+		165
+	)
 
-Legend.TextColor3 =
-    Color3.fromRGB(
-        150,
-        150,
-        155
-    )
+Info.Font =
+	Enum.Font.Gotham
 
-Legend.TextSize =
-    11
+Info.TextSize =
+	11
 
-Legend.Font =
-    Enum.Font.Gotham
+Info.TextXAlignment =
+	Enum.TextXAlignment.Left
 
-Legend.TextXAlignment =
-    Enum.TextXAlignment.Left
+Info.Parent =
+	Main
 
-Legend.TextYAlignment =
-    Enum.TextYAlignment.Top
+local function updateToggle()
 
-Legend.Parent =
-    Main
+	Toggle.Text =
+		"Amulet Check : "
+		.. (
+			Enabled
+			and "ON"
+			or "OFF"
+		)
 
---==================================================
--- TOGGLE UI
---==================================================
+	if Enabled then
 
-local function refreshToggleUI()
+		Toggle.BackgroundColor3 =
+			Color3.fromRGB(
+				35,
+				145,
+				70
+			)
 
-    if Config.Enabled then
-        Toggle.Text =
-            "Amulet Check : ON"
+	else
 
-        Toggle.BackgroundColor3 =
-            Color3.fromRGB(
-                35,
-                150,
-                70
-            )
-    else
-        Toggle.Text =
-            "Amulet Check : OFF"
-
-        Toggle.BackgroundColor3 =
-            Color3.fromRGB(
-                150,
-                45,
-                45
-            )
-
-        Status.Text =
-            "Checker : OFF"
-
-        Result.Text =
-            "แท้ 0 | ปลอม 0 | ? 0"
-    end
+		Toggle.BackgroundColor3 =
+			Color3.fromRGB(
+				150,
+				45,
+				45
+			)
+	end
 end
 
-refreshToggleUI()
+updateToggle()
 
 --==================================================
--- CHECK ONE TRAY
+-- CHECK TRAY
 --==================================================
 
 local function checkTray(
-    tray,
-    trayIndex
+	plot,
+	tray,
+	i
 )
-    local body =
-        tray:FindFirstChild(
-            "Body"
-        )
 
-    if not body
-        or not body:IsA(
-            "MeshPart"
-        ) then
+	local body =
+		tray:FindFirstChild(
+			"Body"
+		)
 
-        removeHighlight(tray)
+	if not body
+		or not body:IsA(
+			"MeshPart"
+		) then
 
-        LastResults[trayIndex] =
-            "EMPTY"
+		return nil
+	end
 
-        return
-    end
+	local model =
+		tray:GetAttribute(
+			"AmuletModel"
+		)
 
-    local model =
-        tray:GetAttribute(
-            "AmuletModel"
-        )
+	local variant,
+		detect =
+		findVariant(
+			body,
+			model
+		)
 
-    local variant,
-        detectMethod =
-        findVariant(body)
+	local result =
+		"?"
 
-    -- UNKNOWN
-    if not variant then
-        UnknownCount += 1
+	if variant
+		and FakeReady then
 
-        local highlight =
-            getHighlight(tray)
+		if Fake[variant] then
+			result = "ปลอม"
+		else
+			result = "แท้"
+		end
+	end
 
-        setHighlightColor(
-            highlight,
-            COLORS.Unknown
-        )
+	setHL(
+		tray,
+		result
+	)
 
-        local key =
-            tostring(model)
-            .. "|UNKNOWN|"
-            .. tostring(
-                detectMethod
-            )
+	local key =
+		plot.Name
+		.. "/Tray"
+		.. i
 
-        if LastResults[trayIndex]
-            ~= key then
+	local state =
+		tostring(model)
+		.. "|"
+		.. tostring(variant)
+		.. "|"
+		.. result
 
-            LastResults[trayIndex] =
-                key
+	if Last[key]
+		~= state then
 
-            print(
-                "[Tray"
-                    .. trayIndex
-                    .. "]",
-                "Model =",
-                model or "?",
-                "| Variant = UNKNOWN",
-                "| Detect =",
-                detectMethod,
-                "| Result = ไม่ทราบ"
-            )
-        end
+		Last[key] =
+			state
 
-        return
-    end
+		print(
+			key,
+			"| Model =",
+			model or "?",
+			"| Variant =",
+			variant or "?",
+			"| Detect =",
+			detect,
+			"| Result =",
+			result
+		)
+	end
 
-    -- REAL / FAKE
-    local fake =
-        isFakeVariant(
-            model,
-            variant
-        )
-
-    if fake == nil then
-        UnknownCount += 1
-
-        local highlight =
-            getHighlight(tray)
-
-        setHighlightColor(
-            highlight,
-            COLORS.Unknown
-        )
-
-        return
-    end
-
-    local highlight =
-        getHighlight(tray)
-
-    local status
-
-    if fake then
-        FakeCount += 1
-
-        status =
-            "ปลอม"
-
-        setHighlightColor(
-            highlight,
-            COLORS.Fake
-        )
-    else
-        RealCount += 1
-
-        status =
-            "แท้"
-
-        setHighlightColor(
-            highlight,
-            COLORS.Real
-        )
-    end
-
-    local key =
-        tostring(model)
-        .. "|"
-        .. tostring(variant)
-        .. "|"
-        .. status
-
-    if LastResults[trayIndex]
-        ~= key then
-
-        LastResults[trayIndex] =
-            key
-
-        print(
-            "[Tray"
-                .. trayIndex
-                .. "]",
-            "Model =",
-            model or "?",
-            "| Variant =",
-            variant,
-            "| Detect =",
-            detectMethod,
-            "| Result =",
-            status
-        )
-    end
+	return result
 end
 
 --==================================================
@@ -1092,275 +720,217 @@ end
 
 local function update()
 
-    if not Config.Enabled then
-        return
-    end
+	if not Enabled then
+		return
+	end
 
-    RealCount = 0
-    FakeCount = 0
-    UnknownCount = 0
+	local real =
+		0
 
-    local plot,
-        method =
-        findMyPlot()
+	local fake =
+		0
 
-    if not plot then
-        Status.Text =
-            "Plot : Not found"
+	local unknown =
+		0
 
-        return
-    end
+	for p = 1, 5 do
 
-    if LastPlot ~= plot then
-        LastPlot = plot
+		local plot =
+			Plots:FindFirstChild(
+				"Plot" .. p
+			)
 
-        table.clear(
-            LastResults
-        )
+		if plot then
 
-        print(
-            "================================"
-        )
+			local shop =
+				plot:FindFirstChild(
+					"ShopScene"
+				)
 
-        print(
-            "[Amulet Checker]",
-            "MY PLOT =",
-            plot.Name
-        )
+			local counter =
+				shop
+				and shop:
+					FindFirstChild(
+						"Counter"
+					)
 
-        print(
-            "[Amulet Checker]",
-            "Detect =",
-            method
-        )
+			if counter then
 
-        print(
-            "================================"
-        )
-    end
+				for t = 1, 9 do
 
-    Status.Text =
-        "Plot : "
-        .. plot.Name
-        .. " ["
-        .. method
-        .. "]"
+					local tray =
+						counter:
+							FindFirstChild(
+								"Tray"
+								.. t
+							)
 
-    local shopScene =
-        plot:FindFirstChild(
-            "ShopScene"
-        )
+					if tray then
 
-    local counter =
-        shopScene
-        and shopScene:FindFirstChild(
-            "Counter"
-        )
+						local r =
+							checkTray(
+								plot,
+								tray,
+								t
+							)
 
-    if not counter then
-        Status.Text =
-            "Counter : Not found"
+						if r == "แท้" then
 
-        return
-    end
+							real += 1
 
-    for i = 1, MAX_TRAY do
-        local tray =
-            counter:FindFirstChild(
-                "Tray" .. i
-            )
+						elseif r == "ปลอม" then
 
-        if tray then
-            checkTray(
-                tray,
-                i
-            )
-        else
-            LastResults[i] =
-                "NO_TRAY"
-        end
-    end
+							fake += 1
 
-    Result.Text =
-        "แท้ "
-        .. RealCount
-        .. " | ปลอม "
-        .. FakeCount
-        .. " | ? "
-        .. UnknownCount
+						elseif r then
+
+							unknown += 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	Result.Text =
+		"แท้ "
+		.. real
+		.. " | ปลอม "
+		.. fake
+		.. " | ? "
+		.. unknown
 end
 
 --==================================================
 -- TOGGLE
 --==================================================
 
-Toggle.Activated:Connect(
-    function()
+Toggle.Activated:Connect(function()
 
-        Config.Enabled =
-            not Config.Enabled
+	Enabled =
+		not Enabled
 
-        refreshToggleUI()
+	updateToggle()
 
-        if Config.Enabled then
+	if Enabled then
 
-            table.clear(
-                LastResults
-            )
+		FakeReady =
+			loadFake()
 
-            buildMeshCache()
+		loadMeshes()
 
-            update()
-        else
-            clearHighlights()
-        end
-    end
-)
+		table.clear(
+			Last
+		)
+
+		update()
+
+	else
+
+		clearHL()
+	end
+end)
 
 --==================================================
--- DRAG UI
+-- DRAG
 --==================================================
 
-local dragging = false
-local dragStart = nil
-local startPosition = nil
+local drag =
+	false
 
-Title.InputBegan:Connect(
-    function(input)
+local start =
+	nil
 
-        if input.UserInputType
-                == Enum.UserInputType
-                    .MouseButton1
-            or input.UserInputType
-                == Enum.UserInputType
-                    .Touch then
+local pos =
+	nil
 
-            dragging = true
+Title.InputBegan:Connect(function(i)
 
-            dragStart =
-                input.Position
+	if i.UserInputType
+		== Enum.UserInputType.MouseButton1 then
 
-            startPosition =
-                Main.Position
-        end
-    end
-)
+		drag =
+			true
 
-UserInputService.InputChanged:Connect(
-    function(input)
+		start =
+			i.Position
 
-        if not dragging
-            or not dragStart
-            or not startPosition then
+		pos =
+			Main.Position
+	end
+end)
 
-            return
-        end
+UIS.InputChanged:Connect(function(i)
 
-        if input.UserInputType
-                == Enum.UserInputType
-                    .MouseMovement
-            or input.UserInputType
-                == Enum.UserInputType
-                    .Touch then
+	if drag
+		and i.UserInputType
+			== Enum.UserInputType.MouseMovement then
 
-            local delta =
-                input.Position
-                - dragStart
+		local d =
+			i.Position
+			- start
 
-            Main.Position =
-                UDim2.new(
-                    startPosition.X.Scale,
-                    startPosition.X.Offset
-                        + delta.X,
+		Main.Position =
+			UDim2.new(
 
-                    startPosition.Y.Scale,
-                    startPosition.Y.Offset
-                        + delta.Y
-                )
-        end
-    end
-)
+				pos.X.Scale,
+				pos.X.Offset + d.X,
 
-UserInputService.InputEnded:Connect(
-    function(input)
+				pos.Y.Scale,
+				pos.Y.Offset + d.Y
+			)
+	end
+end)
 
-        if input.UserInputType
-                == Enum.UserInputType
-                    .MouseButton1
-            or input.UserInputType
-                == Enum.UserInputType
-                    .Touch then
+UIS.InputEnded:Connect(function(i)
 
-            dragging = false
-            dragStart = nil
-            startPosition = nil
-        end
-    end
-)
+	if i.UserInputType
+		== Enum.UserInputType.MouseButton1 then
+
+		drag =
+			false
+	end
+end)
 
 --==================================================
 -- RIGHT SHIFT
 --==================================================
 
-UserInputService.InputBegan:Connect(
-    function(input, processed)
+UIS.InputBegan:Connect(function(i, gp)
 
-        if processed then
-            return
-        end
+	if gp then
+		return
+	end
 
-        if input.KeyCode
-            == Enum.KeyCode.RightShift then
+	if i.KeyCode
+		== Enum.KeyCode.RightShift then
 
-            Main.Visible =
-                not Main.Visible
-        end
-    end
-)
+		Main.Visible =
+			not Main.Visible
+	end
+end)
 
 --==================================================
--- FIRST RUN
+-- START
 --==================================================
 
 update()
 
---==================================================
--- MAIN LOOP
---==================================================
-
 task.spawn(function()
 
-    while
-        getgenv().AmuletCheckRunning
-        and getgenv().AmuletCheckerVersion
-            == THIS_VERSION
-    do
+	while ENV.AmuletCheckerVersion
+		== VER do
 
-        if Config.Enabled then
+		pcall(
+			update
+		)
 
-            local ok, err =
-                pcall(update)
-
-            if not ok then
-                warn(
-                    "[Amulet Checker Error]",
-                    err
-                )
-            end
-        end
-
-        task.wait(
-            CHECK_INTERVAL
-        )
-    end
-
-    print(
-        "[Amulet Checker]",
-        "Old instance stopped"
-    )
+		task.wait(
+			0.75
+		)
+	end
 end)
 
 print(
-    "[Amulet Checker]",
-    "Started | Tray1-Tray9"
+	"[Amulet Checker] Started"
 )
